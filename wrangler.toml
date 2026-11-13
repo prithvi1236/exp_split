@@ -1,0 +1,14 @@
+name = "split-the-bill"
+compatibility_date = "2026-10-01"
+pages_build_output_dir = "public"
+
+# Models are plain config: change them here (or in the Cloudflare dashboard) without touching code.
+[vars]
+CHEAP_MODEL = "inclusionai/ling-3.0-flash-vl"
+STRONG_MODEL = "qwen/qwen3.8-flash"
+# Free models can be slow (140 s seen). Per-model wait, in milliseconds.
+MODEL_TIMEOUT_MS = "170000"
+# Model "thinking": "off" is fast (first item in about 2 s), "low" is slower but more careful.
+# The first read uses CHEAP_*; the double-check (only when the numbers don't add up) uses STRONG_*.
+CHEAP_REASONING = "off"
+STRONG_REASONING = "low"
