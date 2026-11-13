@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Split the Bill</title>
+  <meta name="description" content="Scan a bill, pick who had what, and see what everyone owes.">
+  <meta name="theme-color" content="#0f766e">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Split">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon-192.png">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="top">
+    <h1>Split the Bill</h1>
+    <button id="reset" class="link" data-act="reset">New bill</button>
+  </header>
+
+  <nav id="steps" class="steps" aria-label="Steps"></nav>
+
+  <!-- Shown on every step while a bill is being read in the background -->
+  <div id="scanStrip" class="strip" hidden>
+    <span class="spin" aria-hidden="true"></span>
+    <span id="scanMsg" class="grow" role="status"></span>
+    <button class="link" data-act="cancel-scan">Cancel</button>
+  </div>
+
+  <main id="view"></main>
+
+  <footer class="bottom">
+    <button id="back" class="btn ghost" data-act="back">Back</button>
+    <button id="next" class="btn primary" data-act="next"></button>
+  </footer>
+
+  <!-- Add / edit item -->
+  <dialog id="sheet" class="sheet">
+    <form id="itemForm" method="dialog" novalidate>
+      <h2 id="sheetTitle">Add item</h2>
+      <label>Item name
+        <input id="fName" type="text" autocomplete="off" placeholder="e.g. Margherita pizza" enterkeyhint="next">
+      </label>
+      <div class="grid3">
+        <label>Qty
+          <input id="fQty" type="number" inputmode="decimal" min="0" step="any" value="1">
+        </label>
+        <label>Unit price <span class="muted">(optional)</span>
+          <input id="fUnit" type="number" inputmode="decimal" min="0" step="0.01" placeholder="—">
+        </label>
+        <label>Price
+          <input id="fTotal" type="number" inputmode="decimal" min="0" step="0.01" placeholder="0.00">
+        </label>
+      </div>
+      <p id="fErr" class="err" hidden></p>
+      <div class="sheet-actions">
+        <button type="button" id="fDelete" class="btn danger" data-act="delete-item" hidden>Delete</button>
+        <button type="button" class="btn ghost" data-act="close-sheet">Cancel</button>
+        <button type="submit" class="btn primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" hidden></div>
+  <input id="file" type="file" accept="image/*" hidden>
+
+  <script src="app.js"></script>
+</body>
+</html>
