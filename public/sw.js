@@ -1,4 +1,4 @@
-const CACHE = 'splitbill-v3';
+const CACHE = 'splitbill-v4';
 const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', (e) => {
