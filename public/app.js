@@ -1,12 +1,13 @@
 /* Split the Bill — the split lives on the device (localStorage); only a scanned photo goes to /api/scan. */
 const $ = (s) => document.querySelector(s);
 const KEY = 'splitbill.v1', NAMES = 'splitbill.names';
-const STEPS = ['Bill', 'People', 'Assign', 'Result'];
+const STEPS = ['Bill', 'Split', 'Result'];
 const COLORS = ['#0f766e', '#c2410c', '#6d28d9', '#be185d', '#1d4ed8', '#4d7c0f', '#b45309', '#475569'];
 
-const view = $('#view'), nextBtn = $('#next'), backBtn = $('#back'), sheet = $('#sheet');
+const view = $('#view'), nextBtn = $('#next'), backBtn = $('#back'), sheet = $('#sheet'), personSheet = $('#personSheet');
 let S = load();
-let editingId = null;
+let editingId = null, editingPerson = null;
+let adding = false;               // the add-person panel on the Split step is open
 
 /* ---------- state ---------- */
 function guessCur() {
@@ -14,9 +15,14 @@ function guessCur() {
   return { IN: '₹', US: '$', GB: '£', CA: '$', AU: '$', JP: '¥' }[r] ||
     (['DE', 'FR', 'ES', 'IT', 'NL', 'IE', 'PT', 'AT', 'BE', 'FI'].includes(r) ? '€' : '₹');
 }
-function fresh() { return { step: 0, items: [], people: [], sel: null, total: null, note: null, cur: guessCur() }; }
+function fresh() { return { v: 2, step: 0, items: [], people: [], sel: null, total: null, note: null, cur: guessCur() }; }
 function load() {
-  try { return Object.assign(fresh(), JSON.parse(localStorage.getItem(KEY))); } catch { return fresh(); }
+  try {
+    const old = JSON.parse(localStorage.getItem(KEY));
+    // v1 had a separate People step: Bill, People, Assign, Result.
+    if (old && !old.v) old.step = [0, 1, 1, 2][old.step] || 0;
+    return Object.assign(fresh(), old, { v: 2 });
+  } catch { return fresh(); }
 }
 function loadNames() { try { return JSON.parse(localStorage.getItem(NAMES)) || []; } catch { return []; } }
 function rememberName(name) {
@@ -72,7 +78,7 @@ function blocker(step) {
   if (step >= 1 && !S.items.length && !scanning) return 'Add at least one item';
   if (step >= 2 && S.people.length < 2) return 'Add at least 2 people';
   if (step >= 2 && scanning) return 'Still reading your bill…';
-  if (step >= 3 && unassigned().length) {
+  if (step >= 2 && unassigned().length) {
     const n = unassigned().length;
     return `${n} item${n > 1 ? 's' : ''} left to assign`;
   }
@@ -99,7 +105,7 @@ function liveItems() {
 
 function billView() {
   if (!S.items.length && scanning) {
-    return `<p class="lead">Reading your bill. No need to wait here: go ahead and add people.</p>${liveItems()}`;
+    return `<p class="lead">Reading your bill. No need to wait here: go ahead and add people on the next step.</p>${liveItems()}`;
   }
   if (!S.items.length) {
     return `<div class="empty">
@@ -137,37 +143,34 @@ function billView() {
 
 const av = (p, cls = '') => `<span class="dot ${cls}" style="--c:${p.color}">${esc(p.name[0].toUpperCase())}</span>`;
 
-function peopleView() {
-  const recents = loadNames().filter((n) => !S.people.some((x) => x.name.toLowerCase() === n.toLowerCase()));
-  return `<p class="lead">Who is splitting this bill?</p>
-    <form class="addrow" id="personForm">
-      <input id="pName" type="text" placeholder="Name" autocomplete="off" autocapitalize="words" enterkeyhint="done" maxlength="24">
-      <button class="btn primary" type="submit">Add</button>
-    </form>
-    ${recents.length ? `<div class="recent"><span class="sub">Add again</span>
-      ${recents.map((n) => `<button class="chip" data-act="add-recent" data-name="${esc(n)}">+ ${esc(n)}</button>`).join('')}</div>` : ''}
-    ${S.people.length ? `<div class="card">${S.people.map((p) => `<div class="row">
-      ${av(p)}
-      <span class="grow name">${esc(p.name)}</span>
-      <button class="x" data-act="del-person" data-id="${p.id}" aria-label="Remove ${esc(p.name)}">×</button></div>`).join('')}</div>` : ''}`;
-}
-
 /* Person-first: pick someone in the rail, then tap everything they had. */
 function assignView() {
-  if (S.sel !== 'all' && !S.people.some((p) => p.id === S.sel)) S.sel = S.people[0].id;
+  if (!S.people.some((p) => p.id === S.sel) && !(S.sel === 'all' && S.people.length > 1)) S.sel = S.people[0]?.id || null;
   const all = S.sel === 'all', me = S.people.find((p) => p.id === S.sel);
+  const open = adding || !S.people.length;
   const left = unassigned().length;
   const base = Object.fromEntries(compute().per.map((r) => [r.p.id, r.base]));
+  const recents = loadNames().filter((n) => !S.people.some((x) => x.name.toLowerCase() === n.toLowerCase()));
   return `<div class="rail" role="tablist" aria-label="Who are you picking for?">
       ${S.people.map((p) => `<button role="tab" aria-selected="${p.id === S.sel}" data-act="sel" data-p="${p.id}" style="--c:${p.color}">
         ${av(p)}<span class="rname">${esc(p.name)}</span><span class="rtot">${fmt(base[p.id])}</span></button>`).join('')}
-      <button role="tab" aria-selected="${all}" data-act="sel" data-p="all">
-        <span class="dot every">All</span><span class="rname">Everyone</span><span class="rtot">shared</span></button>
+      ${S.people.length > 1 ? `<button role="tab" aria-selected="${all}" data-act="sel" data-p="all">
+        <span class="dot every">All</span><span class="rname">Everyone</span><span class="rtot">shared</span></button>` : ''}
+      <button class="adder" aria-expanded="${open}" data-act="add-person">
+        <span class="dot every">+</span><span class="rname">Add</span><span class="rtot">person</span></button>
     </div>
-    <p class="lead">${all ? 'Tap what everyone shared.' : `Tap everything ${esc(me.name)} had.`}</p>
+    ${open ? `<form class="addrow" id="personForm">
+      <input id="pName" type="text" placeholder="Name" aria-label="Name" autocomplete="off" autocapitalize="words" enterkeyhint="done" maxlength="24">
+      <button class="btn primary" type="submit">Add</button>
+    </form>
+    ${recents.length ? `<div class="recent"><span class="sub">Add again</span>
+      ${recents.map((n) => `<button class="chip" data-act="add-recent" data-name="${esc(n)}">+ ${esc(n)}</button>`).join('')}</div>` : ''}` : ''}
+    <p class="lead">${!S.people.length ? 'Add everyone splitting this bill.'
+      : all ? 'Tap what everyone shared.'
+      : `Tap everything ${esc(me.name)} had. <button class="link" data-act="edit-person">Rename or remove</button>`}</p>
     ${left && left < S.items.length ? `<div class="banner"><span class="grow">${left} item${left > 1 ? 's' : ''} not picked yet.</span>
       <button class="link" data-act="rest-all">Split between everyone</button></div>` : ''}
-    <div class="card">${S.items.map((it) => {
+    ${S.items.length ? `<div class="card">${S.items.map((it) => {
       const who = sharers(it), total = cents(it.total);
       const on = all ? who.length === S.people.length : it.shares[S.sel] > 0;
       const parts = allocate(total, who.map((p) => it.shares[p.id]));
@@ -185,20 +188,21 @@ function assignView() {
             <span class="amt uamt">${fmt(parts[k])}</span></div>`).join('')}
           <p class="hint flat">Numbers are shares${it.qty > 1 ? ` (e.g. how many of the ${it.qty} each had)` : ''}. · <button class="link" data-act="uneven" data-id="${it.id}">Split equally</button></p></div>`;
       }
-      return `<div class="item ${on ? 'on' : ''}" style="--c:${all ? 'var(--accent)' : me.color}">
-        <button class="row pick" aria-pressed="${on}" data-act="pick" data-id="${it.id}">
+      return `<div class="item ${on ? 'on' : ''}" style="--c:${all ? 'var(--accent)' : me ? me.color : 'var(--line)'}">
+        <button class="row pick" aria-pressed="${on}" data-act="pick" data-id="${it.id}" ${S.sel ? '' : 'disabled'}>
           <span class="tick" aria-hidden="true">${on ? '✓' : ''}</span>
           <span class="grow"><div class="name">${esc(it.name)}</div>
             ${who.length ? (sub ? `<div class="sub">${sub}</div>` : '') : `<div class="sub warn">${sub ? sub + ' · ' : ''}Nobody yet</div>`}</span>
           <span class="stack">${who.map((p) => av(p, 'sm')).join('')}</span>
           <span class="amt">${fmt(total)}</span>
         </button>${extra}</div>`;
-    }).join('')}</div>`;
+    }).join('')}</div>` : ''}
+    ${liveItems()}`;
 }
 
 /* While items are still unpicked, the main button walks through the people in order. */
 function nextPerson() {
-  if (S.step !== 2 || !unassigned().length) return null;
+  if (S.step !== 1 || !unassigned().length) return null;
   const i = S.people.findIndex((p) => p.id === S.sel);
   return i >= 0 && i < S.people.length - 1 ? S.people[i + 1] : null;
 }
@@ -276,7 +280,19 @@ function render() {
   $('#steps').innerHTML = STEPS.map((s, i) =>
     `<button class="${i === S.step ? 'now' : i < S.step ? 'done' : ''}" data-act="step" data-step="${i}" ${i > S.step && blocker(i) ? 'disabled' : ''}>${i + 1}. ${s}</button>`).join('');
   const pn = $('#pName'), typed = pn ? pn.value : '', hadFocus = pn && document.activeElement === pn;
-  view.innerHTML = [billView, peopleView, assignView, resultView][S.step]();
+  const railX = $('.rail')?.scrollLeft;
+  view.innerHTML = [billView, assignView, resultView][S.step]();
+  const rail = $('.rail');
+  if (rail) {                     // keep the rail where it was, with the picked person in view
+    if (railX != null) rail.scrollLeft = railX;
+    const cur = rail.querySelector('[aria-selected="true"]');
+    if (cur) {
+      const pad = 8, end = rail.clientWidth - rail.querySelector('.adder').offsetWidth - pad;
+      const l = cur.offsetLeft - rail.scrollLeft;   // the rail is sticky, so it is the offset parent
+      if (l < pad) rail.scrollLeft += l - pad;
+      else if (l + cur.offsetWidth > end) rail.scrollLeft += l + cur.offsetWidth - end;
+    }
+  }
   if ($('#pName') && typed) { $('#pName').value = typed; if (hadFocus) $('#pName').focus(); }
   $('#scanStrip').hidden = !scanning;
   scanTick();
@@ -284,11 +300,11 @@ function render() {
   $('#reset').hidden = !S.items.length && !S.people.length && !scanning;
   const block = blocker(S.step + 1);
   const np = nextPerson();
-  nextBtn.disabled = S.step < 3 && !!block && !np;
-  nextBtn.textContent = S.step === 3 ? 'Share the split'
+  nextBtn.disabled = S.step < 2 && !!block && !np;
+  nextBtn.textContent = S.step === 2 ? 'Share the split'
     : np ? `Next: ${np.name}`
     : block && (S.step > 0 || S.items.length || scanning) ? block
-    : ['Next: add people', 'Next: who had what?', 'See the split'][S.step];
+    : ['Next: who had what?', 'See the split'][S.step];
   nextBtn.hidden = S.step === 0 && !S.items.length && !scanning;
   document.querySelector('.bottom').hidden = nextBtn.hidden && backBtn.hidden;
 }
@@ -380,7 +396,7 @@ function scanTick() {
 /* Refresh the live list, but never while the user is typing in a field. */
 function scanLive() {
   scanTick();
-  if (S.step === 0 && !/^(INPUT|SELECT)$/.test(document.activeElement?.tagName || '') && !sheet.open) render();
+  if (S.step <= 1 && !/^(INPUT|SELECT)$/.test(document.activeElement?.tagName || '') && !sheet.open && !personSheet.open) render();
 }
 
 async function scan(file) {
@@ -450,14 +466,20 @@ document.addEventListener('click', async (e) => {
     case 'scan': if (scanning) { toast('Still reading the last bill'); return; } $('#file').click(); return;
     case 'add-item': openSheet(); return;
     case 'edit-item': openSheet(id); return;
-    case 'close-sheet': sheet.close(); return;
+    case 'close-sheet': el.closest('dialog').close(); return;
     case 'dismiss-note': S.note = null; break;
     case 'cancel-scan': scanCancelled = true; scanCtl?.abort(); return;
     case 'delete-item': S.items = S.items.filter((i) => i.id !== editingId); sheet.close(); break;
     case 'del-person':
-      S.people = S.people.filter((x) => x.id !== id);
-      S.items.forEach((i) => { delete i.shares[id]; });
+      S.people = S.people.filter((x) => x.id !== editingPerson);
+      S.items.forEach((i) => { delete i.shares[editingPerson]; if (sharers(i).length < 2) i.uneven = false; });
+      personSheet.close();
       break;
+    case 'edit-person': openPerson(S.sel); return;
+    case 'add-person':
+      adding = !adding; render();
+      if (adding) $('#pName')?.focus();
+      return;
     case 'rest-all': unassigned().forEach((i) => S.people.forEach((x) => { i.shares[x.id] = 1; })); break;
     case 'uneven':
       it.uneven = !it.uneven;
@@ -469,14 +491,18 @@ document.addEventListener('click', async (e) => {
     case 'back': go(S.step - 1); return;
     case 'next':
       if (nextPerson()) { S.sel = nextPerson().id; view.scrollTop = 0; break; }
-      if (S.step < 3) return go(S.step + 1);
+      if (S.step < 2) return go(S.step + 1);
       shareOut(shareText());
       return;
     case 'share-one': shareOut(personText(id)); return;
     case 'image': shareImage(); return;
-    case 'sel': S.sel = p; break;
+    case 'sel':
+      if (p === S.sel && p !== 'all' && !adding) { openPerson(p); return; }
+      S.sel = p; adding = false;
+      break;
     case 'add-recent': addPerson(el.dataset.name); break;
     case 'pick':
+      adding = false;
       if (S.sel === 'all') {
         const full = sharers(it).length === S.people.length;
         it.shares = {};
@@ -484,9 +510,8 @@ document.addEventListener('click', async (e) => {
       } else if (it.shares[S.sel] > 0) delete it.shares[S.sel]; else it.shares[S.sel] = 1;
       if (sharers(it).length < 2) it.uneven = false;
       break;
-    case 'copy': copy(shareText()); return;
     case 'reset':
-      if (confirm('Start a new bill? This clears the current one.')) { if (scanning) { scanCancelled = true; scanCtl?.abort(); } S = fresh(); }
+      if (confirm('Start a new bill? This clears the current one.')) { if (scanning) { scanCancelled = true; scanCtl?.abort(); } S = fresh(); adding = false; }
       break;
     default: return;
   }
@@ -497,11 +522,34 @@ function addPerson(name) {
   if (S.people.some((x) => x.name.toLowerCase() === name.toLowerCase())) { toast(`${name} is already added`); return false; }
   const used = S.people.map((x) => x.color);
   S.people.push({ id: uid(), name, color: COLORS.find((c) => !used.includes(c)) || COLORS[S.people.length % COLORS.length] });
+  S.sel = S.people[S.people.length - 1].id;
+  adding = true;                  // stay open so several people can be added in a row
   rememberName(name);
   return true;
 }
 
+function openPerson(id) {
+  const who = S.people.find((x) => x.id === id);
+  if (!who) return;
+  editingPerson = id;
+  $('#eName').value = who.name;
+  $('#eErr').hidden = true;
+  personSheet.showModal();
+}
+
 document.addEventListener('submit', (e) => {
+  if (e.target.id === 'personEdit') {
+    e.preventDefault();
+    const name = $('#eName').value.trim();
+    const err = !name ? 'Enter a name.'
+      : S.people.some((x) => x.id !== editingPerson && x.name.toLowerCase() === name.toLowerCase()) ? `${name} is already added.` : '';
+    if (err) { $('#eErr').textContent = err; $('#eErr').hidden = false; return; }
+    S.people.find((x) => x.id === editingPerson).name = name;
+    rememberName(name);
+    personSheet.close();
+    render();
+    return;
+  }
   if (e.target.id !== 'personForm') return;
   e.preventDefault();
   const name = $('#pName').value.trim();
@@ -519,7 +567,7 @@ document.addEventListener('change', (e) => {
   } else if (e.target.id === 'cur') { S.cur = e.target.value; render(); }
 });
 
-sheet.addEventListener('click', (e) => { if (e.target === sheet) sheet.close(); });
+[sheet, personSheet].forEach((d) => d.addEventListener('click', (e) => { if (e.target === d) d.close(); }));
 
 render();
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});

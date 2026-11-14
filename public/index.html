@@ -62,6 +62,22 @@
     </form>
   </dialog>
 
+  <!-- Rename / remove a person -->
+  <dialog id="personSheet" class="sheet">
+    <form id="personEdit" method="dialog" novalidate>
+      <h2>Edit person</h2>
+      <label>Name
+        <input id="eName" type="text" autocomplete="off" autocapitalize="words" maxlength="24" enterkeyhint="done">
+      </label>
+      <p id="eErr" class="err" hidden></p>
+      <div class="sheet-actions">
+        <button type="button" class="btn danger" data-act="del-person">Remove</button>
+        <button type="button" class="btn ghost" data-act="close-sheet">Cancel</button>
+        <button type="submit" class="btn primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
   <div id="toast" class="toast" role="status" hidden></div>
   <input id="file" type="file" accept="image/*" hidden>
 
