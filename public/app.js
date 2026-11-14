@@ -15,13 +15,13 @@ function guessCur() {
   return { IN: '₹', US: '$', GB: '£', CA: '$', AU: '$', JP: '¥' }[r] ||
     (['DE', 'FR', 'ES', 'IT', 'NL', 'IE', 'PT', 'AT', 'BE', 'FI'].includes(r) ? '€' : '₹');
 }
-function fresh() { return { v: 2, step: 0, items: [], people: [], sel: null, total: null, note: null, cur: guessCur() }; }
+function fresh() { return { v: 3, step: 0, items: [], people: [], sel: null, total: null, note: null, cur: guessCur() }; }
 function load() {
   try {
     const old = JSON.parse(localStorage.getItem(KEY));
     // v1 had a separate People step: Bill, People, Assign, Result.
     if (old && !old.v) old.step = [0, 1, 1, 2][old.step] || 0;
-    return Object.assign(fresh(), old, { v: 2 });
+    return Object.assign(fresh(), old, { v: 3 });
   } catch { return fresh(); }
 }
 function loadNames() { try { return JSON.parse(localStorage.getItem(NAMES)) || []; } catch { return []; } }
@@ -51,20 +51,54 @@ function allocate(amount, weights) {
 
 const subtotal = () => S.items.reduce((a, i) => a + cents(i.total), 0);
 const billTotal = () => (S.total != null ? cents(S.total) : subtotal());
-const sharers = (item) => S.people.filter((p) => item.shares[p.id] > 0);
-const unassigned = () => S.items.filter((i) => !sharers(i).length);
+const sharersOf = (shares) => S.people.filter((p) => shares[p.id] > 0);
+const sharers = (item) => sharersOf(item.shares);
+
+/* A quantity item (2 to 24 of something) is split into one slot per unit, kept in `parts`.
+   Each slot has its own sharers, so one unit can go to one person and the next be shared.
+   Splits saved before slots existed are carried over the first time the item is read. */
+const canCount = (it) => Number.isInteger(it.qty) && it.qty > 1 && it.qty <= 24;
+function slots(it) {
+  if (!canCount(it)) return null;
+  if (!it.parts || it.parts.length !== it.qty) {
+    const ids = Object.keys(it.shares || {}).filter((id) => it.shares[id] > 0);
+    // Counts that add up to the quantity ("Asha had 2, Ravi 1") become one slot each; anything else was an equal split.
+    const owners = ids.reduce((a, id) => a + it.shares[id], 0) === it.qty ? ids.flatMap((id) => Array(it.shares[id]).fill(id)) : null;
+    it.parts = Array.from({ length: it.qty }, (_, k) => (owners ? { [owners[k]]: 1 } : Object.fromEntries(ids.map((id) => [id, 1]))));
+    it.shares = {}; it.uneven = false; delete it.lump;
+  }
+  return it.parts;
+}
+/* What gets split. Slots held by the same people are split together as one amount,
+   so six rotis between three people come to the same total for each of them. */
+function pieces(it) {
+  const parts = slots(it);
+  if (!parts) return [{ shares: it.shares, amt: cents(it.total), n: 1 }];
+  const amts = allocate(cents(it.total), parts.map(() => 1)), groups = new Map();
+  parts.forEach((shares, k) => {
+    const key = sharersOf(shares).map((p) => p.id).join();
+    const g = groups.get(key) || { shares, amt: 0, n: 0 };
+    g.amt += amts[k]; g.n++;
+    groups.set(key, g);
+  });
+  return [...groups.values()];
+}
+const finished = (it) => pieces(it).every((pc) => sharersOf(pc.shares).length);
+const unassigned = () => S.items.filter((i) => !finished(i));
+const everyone = () => Object.fromEntries(S.people.map((x) => [x.id, 1]));
+const isEveryone = (shares) => S.people.length > 0 && sharersOf(shares).length === S.people.length;
 
 function compute() {
   const per = S.people.map((p) => ({ p, base: 0, extra: 0, lines: [] }));
   const idx = Object.fromEntries(S.people.map((p, i) => [p.id, i]));
-  for (const it of S.items) {
-    const who = sharers(it);
-    const w = who.map((p) => it.shares[p.id]);
+  for (const it of S.items) for (const pc of pieces(it)) {
+    const who = sharersOf(pc.shares);
+    const w = who.map((p) => pc.shares[p.id]);
     const W = w.reduce((a, b) => a + b, 0);
-    allocate(cents(it.total), w).forEach((amt, k) => {
+    allocate(pc.amt, w).forEach((amt, k) => {
       const row = per[idx[who[k].id]];
       row.base += amt;
-      row.lines.push({ name: it.name, amt, frac: who.length > 1 ? `${w[k]}/${W}` : '' });
+      row.lines.push({ name: it.name + (pc.n > 1 ? ` ×${pc.n}` : ''), amt, frac: who.length > 1 ? `${w[k]}/${W}` : '' });
     });
   }
   const extra = billTotal() - subtotal();
@@ -168,34 +202,64 @@ function assignView() {
     <p class="lead">${!S.people.length ? 'Add everyone splitting this bill.'
       : all ? 'Tap what everyone shared.'
       : `Tap everything ${esc(me.name)} had. <button class="link" data-act="edit-person">Rename or remove</button>`}</p>
-    ${left && left < S.items.length ? `<div class="banner"><span class="grow">${left} item${left > 1 ? 's' : ''} not picked yet.</span>
+    ${left && left < S.items.length ? `<div class="banner"><span class="grow">${left} item${left > 1 ? 's' : ''} not finished yet.</span>
       <button class="link" data-act="rest-all">Split between everyone</button></div>` : ''}
     ${S.items.length ? `<div class="card">${S.items.map((it) => {
       const who = sharers(it), total = cents(it.total);
+      const tint = all ? 'var(--accent)' : me ? me.color : 'var(--line)';
+      const each = (amt, n) => { const e = allocate(amt, Array(n).fill(1)); return `${e[0] !== e[n - 1] ? 'about ' : ''}${fmt(e[n - 1])} each`; };
+      const row = ({ name, sub, warn, badges, amt, on, tick }) => `<button class="row pick" aria-pressed="${on}"
+          data-act="pick" data-id="${it.id}" ${S.sel ? '' : 'disabled'}>
+          <span class="tick" aria-hidden="true">${on ? tick || '✓' : ''}</span>
+          <span class="grow"><div class="name">${name}</div>${sub ? `<div class="sub ${warn ? 'warn' : ''}">${sub}</div>` : ''}</span>
+          <span class="stack">${badges}</span>
+          <span class="amt">${fmt(amt)}</span></button>`;
+
+      const units = slots(it);
+      if (units) {
+        const free = units.filter((sh) => !sharersOf(sh).length).length;
+        const mine = all ? 0 : units.filter((sh) => sh[S.sel] > 0).length;
+        const on = all ? units.every(isEveryone) : mine > 0;
+        const big = it.qty > 6, show = !big || it.open;      // many units stay folded into counts until asked for
+        const groups = new Map();
+        units.forEach((sh) => {
+          const w = sharersOf(sh);
+          if (w.length) groups.set(w.map((p) => p.id).join(), { w, n: (groups.get(w.map((p) => p.id).join())?.n || 0) + 1 });
+        });
+        const summary = [...groups.values()].map(({ w, n }) => `<span class="cnt ${w.length > 1 ? 'grp' : ''}" style="--c:${w[0].color}">${
+          w.length > 3 ? `${w.length} people` : esc(w.map((p) => p.name[0].toUpperCase()).join('+'))}${n > 1 ? ` ×${n}` : ''}</span>`).join('');
+        const toggle = big ? `<button class="link" data-act="toggle-slots" data-id="${it.id}">${show ? 'Hide each one' : 'Show each one'}</button>` : '';
+        const tip = show && free < it.qty ? 'Tap a filled slot to share it' : '';
+        return `<div class="item ${on ? 'on' : ''}" style="--c:${tint}">
+          ${row({ name: esc(it.name), amt: total, on, tick: all ? '✓' : String(mine), warn: free > 0,
+            sub: `${it.qty} ordered · ${free ? `${free} left` : 'all taken'}`, badges: show ? '' : summary })}
+          ${show ? `<div class="slots">${units.map((sh, k) => {
+            const w = sharersOf(sh);
+            return `<button class="slot ${w.length ? '' : 'free'}" aria-pressed="${all ? isEveryone(sh) : sh[S.sel] > 0}" data-act="pick" data-id="${it.id}" data-k="${k}"
+              aria-label="${w.length ? `One ${esc(it.name)}: ${esc(w.map((p) => p.name).join(', '))}` : `One ${esc(it.name)}, free`}" ${S.sel ? '' : 'disabled'}>${
+              w.length ? w.map((p) => av(p, 'sm')).join('') : '+'}</button>`;
+          }).join('')}</div>` : ''}
+          ${tip || toggle ? `<p class="hint">${[tip, toggle].filter(Boolean).join(' · ')}</p>` : ''}</div>`;
+      }
+
       const on = all ? who.length === S.people.length : it.shares[S.sel] > 0;
       const parts = allocate(total, who.map((p) => it.shares[p.id]));
-      const sub = [it.qty !== 1 ? `Qty ${it.qty}` : '',
-        who.length >= 2 && !it.uneven ? `${parts.some((x) => x !== parts[0]) ? 'about ' : ''}${fmt(parts[parts.length - 1])} each` : ''].filter(Boolean).join(' · ');
-      let extra = '';
-      if (who.length >= 2 && !it.uneven) {
-        extra = `<p class="hint"><button class="link" data-act="uneven" data-id="${it.id}">Split unevenly</button></p>`;
-      } else if (who.length >= 2) {
+      const sub = [it.qty !== 1 ? `Qty ${it.qty}` : '', who.length >= 2 && !it.uneven ? each(total, who.length) : ''].filter(Boolean).join(' · ');
+      const link = who.length >= 2 ? `<button class="link" data-act="uneven" data-id="${it.id}">Split unevenly</button>` : '';
+      let extra = link ? `<p class="hint">${link}</p>` : '';
+      if (who.length >= 2 && it.uneven) {
         extra = `<div class="uneven">${who.map((p, k) => `<div class="urow">
             <span class="grow name">${esc(p.name)}</span>
             <span class="stepper"><button data-act="dec" data-id="${it.id}" data-p="${p.id}" aria-label="Less">−</button>
             <span>${it.shares[p.id]}</span>
             <button data-act="inc" data-id="${it.id}" data-p="${p.id}" aria-label="More">+</button></span>
             <span class="amt uamt">${fmt(parts[k])}</span></div>`).join('')}
-          <p class="hint flat">Numbers are shares${it.qty > 1 ? ` (e.g. how many of the ${it.qty} each had)` : ''}. · <button class="link" data-act="uneven" data-id="${it.id}">Split equally</button></p></div>`;
+          <p class="hint flat">Numbers are shares. · <button class="link" data-act="uneven" data-id="${it.id}">Split equally</button></p></div>`;
       }
-      return `<div class="item ${on ? 'on' : ''}" style="--c:${all ? 'var(--accent)' : me ? me.color : 'var(--line)'}">
-        <button class="row pick" aria-pressed="${on}" data-act="pick" data-id="${it.id}" ${S.sel ? '' : 'disabled'}>
-          <span class="tick" aria-hidden="true">${on ? '✓' : ''}</span>
-          <span class="grow"><div class="name">${esc(it.name)}</div>
-            ${who.length ? (sub ? `<div class="sub">${sub}</div>` : '') : `<div class="sub warn">${sub ? sub + ' · ' : ''}Nobody yet</div>`}</span>
-          <span class="stack">${who.map((p) => av(p, 'sm')).join('')}</span>
-          <span class="amt">${fmt(total)}</span>
-        </button>${extra}</div>`;
+      return `<div class="item ${on ? 'on' : ''}" style="--c:${tint}">
+        ${row({ name: esc(it.name), amt: total, on, warn: !who.length,
+          sub: who.length ? sub : `${sub ? sub + ' · ' : ''}Nobody yet`,
+          badges: who.map((p) => av(p, 'sm')).join('') })}${extra}</div>`;
     }).join('')}</div>` : ''}
     ${liveItems()}`;
 }
@@ -339,6 +403,8 @@ $('#itemForm').addEventListener('submit', (e) => {
   const unit = $('#fUnit').value === '' ? null : Number($('#fUnit').value);
   const data = { name, qty, unit, total: Math.round(total * 100) / 100, flag: false };
   const it = S.items.find((i) => i.id === editingId);
+  // A changed quantity makes the old claims meaningless, so start that item over.
+  if (it && it.qty !== qty) { it.shares = {}; delete it.parts; it.uneven = false; }
   if (it) Object.assign(it, data); else S.items.push({ id: uid(), shares: {}, ...data });
   sheet.close();
   render();
@@ -472,7 +538,11 @@ document.addEventListener('click', async (e) => {
     case 'delete-item': S.items = S.items.filter((i) => i.id !== editingId); sheet.close(); break;
     case 'del-person':
       S.people = S.people.filter((x) => x.id !== editingPerson);
-      S.items.forEach((i) => { delete i.shares[editingPerson]; if (sharers(i).length < 2) i.uneven = false; });
+      S.items.forEach((i) => {
+        delete i.shares[editingPerson];
+        i.parts?.forEach((sh) => { delete sh[editingPerson]; });
+        if (sharers(i).length < 2) i.uneven = false;
+      });
       personSheet.close();
       break;
     case 'edit-person': openPerson(S.sel); return;
@@ -480,7 +550,14 @@ document.addEventListener('click', async (e) => {
       adding = !adding; render();
       if (adding) $('#pName')?.focus();
       return;
-    case 'rest-all': unassigned().forEach((i) => S.people.forEach((x) => { i.shares[x.id] = 1; })); break;
+    case 'rest-all':
+      unassigned().forEach((i) => {
+        const units = slots(i);
+        if (units) i.parts = units.map((sh) => (sharersOf(sh).length ? sh : everyone()));   // claimed slots stay as they are
+        else i.shares = everyone();
+      });
+      break;
+    case 'toggle-slots': it.open = !it.open; break;
     case 'uneven':
       it.uneven = !it.uneven;
       if (!it.uneven) sharers(it).forEach((x) => { it.shares[x.id] = 1; });
@@ -501,15 +578,28 @@ document.addEventListener('click', async (e) => {
       S.sel = p; adding = false;
       break;
     case 'add-recent': addPerson(el.dataset.name); break;
-    case 'pick':
+    case 'pick': {
       adding = false;
+      const units = slots(it), k = el.dataset.k;
+      if (units && k == null) {               // the row of a quantity item: take the next free slot
+        if (S.sel === 'all') { const full = units.every(isEveryone); it.parts = units.map(() => (full ? {} : everyone())); break; }
+        const free = units.find((sh) => !sharersOf(sh).length);
+        if (free) free[S.sel] = 1;
+        else {
+          if (it.qty > 6) it.open = true;
+          toast(`All ${it.qty} are taken. Tap a slot to share it, or your own to give it up.`);
+        }
+        break;
+      }
+      const sh = units ? units[k] : it.shares;
       if (S.sel === 'all') {
-        const full = sharers(it).length === S.people.length;
-        it.shares = {};
-        if (!full) S.people.forEach((x) => { it.shares[x.id] = 1; });
-      } else if (it.shares[S.sel] > 0) delete it.shares[S.sel]; else it.shares[S.sel] = 1;
-      if (sharers(it).length < 2) it.uneven = false;
+        const full = isEveryone(sh);
+        Object.keys(sh).forEach((key) => { delete sh[key]; });
+        if (!full) Object.assign(sh, everyone());
+      } else if (sh[S.sel] > 0) delete sh[S.sel]; else sh[S.sel] = 1;
+      if (!units && sharers(it).length < 2) it.uneven = false;
       break;
+    }
     case 'reset':
       if (confirm('Start a new bill? This clears the current one.')) { if (scanning) { scanCancelled = true; scanCtl?.abort(); } S = fresh(); adding = false; }
       break;
