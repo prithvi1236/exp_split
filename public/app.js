@@ -7,6 +7,7 @@ const COLORS = ['#0f766e', '#c2410c', '#6d28d9', '#be185d', '#1d4ed8', '#4d7c0f'
 const view = $('#view'), nextBtn = $('#next'), backBtn = $('#back'), sheet = $('#sheet'), personSheet = $('#personSheet');
 let S = load();
 let editingId = null, editingPerson = null;
+let delFor = null;               // person whose tile badge is showing delete instead of rename
 let adding = false;               // the add-person panel on the Split step is open
 
 /* ---------- state ---------- */
@@ -175,6 +176,8 @@ function billView() {
     </div>`;
 }
 
+const PENCIL = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>';
+const TRASH = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/></svg>';
 const av = (p, cls = '') => `<span class="dot ${cls}" style="--c:${p.color}">${esc(p.name[0].toUpperCase())}</span>`;
 
 /* Person-first: pick someone in the rail, then tap everything they had. */
@@ -186,8 +189,13 @@ function assignView() {
   const base = Object.fromEntries(compute().per.map((r) => [r.p.id, r.base]));
   const recents = loadNames().filter((n) => !S.people.some((x) => x.name.toLowerCase() === n.toLowerCase()));
   return `<div class="rail" role="tablist" aria-label="Who are you picking for?">
-      ${S.people.map((p) => `<button role="tab" aria-selected="${p.id === S.sel}" data-act="sel" data-p="${p.id}" style="--c:${p.color}">
-        ${av(p)}<span class="rname">${esc(p.name)}</span><span class="rtot">${fmt(base[p.id])}</span></button>`).join('')}
+      ${S.people.map((p) => `<div class="tile">
+        <button role="tab" aria-selected="${p.id === S.sel}" data-act="sel" data-p="${p.id}" style="--c:${p.color}">
+          ${av(p)}<span class="rname">${esc(p.name)}</span><span class="rtot">${fmt(base[p.id])}</span></button>
+        ${delFor === p.id
+          ? `<button class="edit del" data-act="del-person" data-p="${p.id}" aria-label="Remove ${esc(p.name)}">${TRASH}</button>`
+          : `<button class="edit" data-act="edit-person" data-p="${p.id}" aria-label="Rename ${esc(p.name)}">${PENCIL}</button>`}
+      </div>`).join('')}
       ${S.people.length > 1 ? `<button role="tab" aria-selected="${all}" data-act="sel" data-p="all">
         <span class="dot every">All</span><span class="rname">Everyone</span><span class="rtot">shared</span></button>` : ''}
       <button class="adder" aria-expanded="${open}" data-act="add-person">
@@ -201,7 +209,7 @@ function assignView() {
       ${recents.map((n) => `<button class="chip" data-act="add-recent" data-name="${esc(n)}">+ ${esc(n)}</button>`).join('')}</div>` : ''}` : ''}
     <p class="lead">${!S.people.length ? 'Add everyone splitting this bill.'
       : all ? 'Tap what everyone shared.'
-      : `Tap everything ${esc(me.name)} had. <button class="link" data-act="edit-person">Rename or remove</button>`}</p>
+      : `Tap everything ${esc(me.name)} had.`}</p>
     ${left && left < S.items.length ? `<div class="banner"><span class="grow">${left} item${left > 1 ? 's' : ''} not finished yet.</span>
       <button class="link" data-act="rest-all">Split between everyone</button></div>` : ''}
     ${S.items.length ? `<div class="card">${S.items.map((it) => {
@@ -349,7 +357,7 @@ function render() {
   const rail = $('.rail');
   if (rail) {                     // keep the rail where it was, with the picked person in view
     if (railX != null) rail.scrollLeft = railX;
-    const cur = rail.querySelector('[aria-selected="true"]');
+    const on = rail.querySelector('[aria-selected="true"]'), cur = on?.closest('.tile') || on;
     if (cur) {
       const pad = 8, end = rail.clientWidth - rail.querySelector('.adder').offsetWidth - pad;
       const l = cur.offsetLeft - rail.scrollLeft;   // the rail is sticky, so it is the offset parent
@@ -527,6 +535,7 @@ document.addEventListener('click', async (e) => {
   const el = e.target.closest('[data-act]');
   if (!el) return;
   const { act, id, p } = el.dataset;
+  if (!['sel', 'del-person', 'edit-person', 'close-sheet'].includes(act)) delFor = null;
   const it = S.items.find((i) => i.id === id);
   switch (act) {
     case 'scan': if (scanning) { toast('Still reading the last bill'); return; } $('#file').click(); return;
@@ -537,15 +546,15 @@ document.addEventListener('click', async (e) => {
     case 'cancel-scan': scanCancelled = true; scanCtl?.abort(); return;
     case 'delete-item': S.items = S.items.filter((i) => i.id !== editingId); sheet.close(); break;
     case 'del-person':
-      S.people = S.people.filter((x) => x.id !== editingPerson);
-      S.items.forEach((i) => {
-        delete i.shares[editingPerson];
-        i.parts?.forEach((sh) => { delete sh[editingPerson]; });
-        if (sharers(i).length < 2) i.uneven = false;
-      });
-      personSheet.close();
+      if (delFor !== p) return;               // only the armed tile's badge removes
+      if (personSheet.open) personSheet.close();
+      removePerson(p);
       break;
-    case 'edit-person': openPerson(S.sel); return;
+    case 'edit-person':               // select them, arm delete on their badge, and open rename
+      S.sel = p; delFor = p; adding = false;
+      render();
+      openPerson(p);
+      return;
     case 'add-person':
       adding = !adding; render();
       if (adding) $('#pName')?.focus();
@@ -574,8 +583,10 @@ document.addEventListener('click', async (e) => {
     case 'share-one': shareOut(personText(id)); return;
     case 'image': shareImage(); return;
     case 'sel':
-      if (p === S.sel && p !== 'all' && !adding) { openPerson(p); return; }
-      S.sel = p; adding = false;
+      // Tapping the active person again swaps their rename badge for delete, and back.
+      if (p === S.sel && p !== 'all') delFor = delFor === p ? null : p;
+      else { S.sel = p; delFor = null; }
+      adding = false;
       break;
     case 'add-recent': addPerson(el.dataset.name); break;
     case 'pick': {
@@ -618,13 +629,36 @@ function addPerson(name) {
   return true;
 }
 
+function removePerson(id) {
+  const gone = S.people.find((x) => x.id === id);
+  S.people = S.people.filter((x) => x.id !== id);
+  S.items.forEach((i) => {
+    delete i.shares[id];
+    i.parts?.forEach((sh) => { delete sh[id]; });
+    if (sharers(i).length < 2) i.uneven = false;
+  });
+  delFor = null;
+  if (gone) toast(`Removed ${gone.name}`);
+}
+
 function openPerson(id) {
   const who = S.people.find((x) => x.id === id);
   if (!who) return;
   editingPerson = id;
   $('#eName').value = who.name;
   $('#eErr').hidden = true;
+  // A copy of their tile goes inside the sheet's layer, exactly over the real one, so it is
+  // not dimmed with the rest of the page and its delete badge is a real, tappable button.
+  const tile = $(`.rail .edit[data-p="${id}"]`)?.closest('.tile'), lift = $('#lift');
+  lift.hidden = !tile;
+  if (tile) {
+    const r = tile.getBoundingClientRect();
+    lift.innerHTML = tile.outerHTML;
+    lift.querySelector('[role="tab"]').removeAttribute('data-act');   // only the badge acts in the copy
+    Object.assign(lift.style, { left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px` });
+  }
   personSheet.showModal();
+  $('#eName').focus();
 }
 
 document.addEventListener('submit', (e) => {
