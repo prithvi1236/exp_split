@@ -60,7 +60,7 @@ const sharers = (item) => sharersOf(item.shares);
    Splits saved before slots existed are carried over the first time the item is read. */
 const canCount = (it) => Number.isInteger(it.qty) && it.qty > 1 && it.qty <= 24;
 function slots(it) {
-  if (!canCount(it)) return null;
+  if (!canCount(it) || it.whole) return null;        // `whole`: shared as one item, by price not by unit
   if (!it.parts || it.parts.length !== it.qty) {
     const ids = Object.keys(it.shares || {}).filter((id) => it.shares[id] > 0);
     // Counts that add up to the quantity ("Asha had 2, Ravi 1") become one slot each; anything else was an equal split.
@@ -238,6 +238,7 @@ function assignView() {
           w.length > 3 ? `${w.length} people` : esc(w.map((p) => p.name[0].toUpperCase()).join('+'))}${n > 1 ? ` ×${n}` : ''}</span>`).join('');
         const toggle = big ? `<button class="link" data-act="toggle-slots" data-id="${it.id}">${show ? 'Hide each one' : 'Show each one'}</button>` : '';
         const tip = show && free < it.qty ? 'Tap a filled slot to share it' : '';
+        const asOne = `<button class="link" data-act="whole" data-id="${it.id}">Share as one</button>`;
         return `<div class="item ${on ? 'on' : ''}" style="--c:${tint}">
           ${row({ name: esc(it.name), amt: total, on, tick: all ? '✓' : String(mine), warn: free > 0,
             sub: `${it.qty} ordered · ${free ? `${free} left` : 'all taken'}`, badges: show ? '' : summary })}
@@ -247,13 +248,14 @@ function assignView() {
               aria-label="${w.length ? `One ${esc(it.name)}: ${esc(w.map((p) => p.name).join(', '))}` : `One ${esc(it.name)}, free`}" ${S.sel ? '' : 'disabled'}>${
               w.length ? w.map((p) => av(p, 'sm')).join('') : '+'}</button>`;
           }).join('')}</div>` : ''}
-          ${tip || toggle ? `<p class="hint">${[tip, toggle].filter(Boolean).join(' · ')}</p>` : ''}</div>`;
+          <p class="hint">${[tip, asOne, toggle].filter(Boolean).join(' · ')}</p></div>`;
       }
 
       const on = all ? who.length === S.people.length : it.shares[S.sel] > 0;
       const parts = allocate(total, who.map((p) => it.shares[p.id]));
       const sub = [it.qty !== 1 ? `Qty ${it.qty}` : '', who.length >= 2 && !it.uneven ? each(total, who.length) : ''].filter(Boolean).join(' · ');
-      const link = who.length >= 2 ? `<button class="link" data-act="uneven" data-id="${it.id}">Split unevenly</button>` : '';
+      const link = [who.length >= 2 ? `<button class="link" data-act="uneven" data-id="${it.id}">Split unevenly</button>` : '',
+        it.whole && canCount(it) ? `<button class="link" data-act="by-unit" data-id="${it.id}">Split by unit</button>` : ''].filter(Boolean).join(' · ');
       let extra = link ? `<p class="hint">${link}</p>` : '';
       if (who.length >= 2 && it.uneven) {
         extra = `<div class="uneven">${who.map((p, k) => `<div class="urow">
@@ -412,7 +414,7 @@ $('#itemForm').addEventListener('submit', (e) => {
   const data = { name, qty, unit, total: Math.round(total * 100) / 100, flag: false };
   const it = S.items.find((i) => i.id === editingId);
   // A changed quantity makes the old claims meaningless, so start that item over.
-  if (it && it.qty !== qty) { it.shares = {}; delete it.parts; it.uneven = false; }
+  if (it && it.qty !== qty) { it.shares = {}; delete it.parts; it.uneven = it.whole = false; }
   if (it) Object.assign(it, data); else S.items.push({ id: uid(), shares: {}, ...data });
   sheet.close();
   render();
@@ -520,10 +522,15 @@ $('#file').addEventListener('change', (e) => { const f = e.target.files[0]; e.ta
 
 /* ---------- misc ---------- */
 let toastT;
-function toast(text) {
+function toast(text, action) {
   const t = $('#toast');
   t.textContent = text; t.hidden = false;
-  clearTimeout(toastT); toastT = setTimeout(() => { t.hidden = true; }, 3500);
+  if (action) {
+    const b = document.createElement('button');
+    b.textContent = action.label; b.dataset.act = action.act; b.dataset.id = action.id;
+    t.append(b);
+  }
+  clearTimeout(toastT); toastT = setTimeout(() => { t.hidden = true; }, action ? 7000 : 3500);
 }
 async function copy(text) {
   try { await navigator.clipboard.writeText(text); toast('Copied — paste it in your group chat'); }
@@ -567,6 +574,15 @@ document.addEventListener('click', async (e) => {
       });
       break;
     case 'toggle-slots': it.open = !it.open; break;
+    case 'whole': {                           // share the whole item equally, by price, between whoever is on it
+      const ids = new Set((it.parts || []).flatMap((sh) => sharersOf(sh).map((x) => x.id)));
+      if (el.closest('#toast') && S.people.some((x) => x.id === S.sel)) ids.add(S.sel);   // whoever ran out of slots joins too
+      it.whole = true; it.open = false; delete it.parts;
+      it.shares = Object.fromEntries([...ids].map((x) => [x, 1]));
+      $('#toast').hidden = true;
+      break;
+    }
+    case 'by-unit': it.whole = it.uneven = false; it.shares = {}; delete it.parts; break;
     case 'uneven':
       it.uneven = !it.uneven;
       if (!it.uneven) sharers(it).forEach((x) => { it.shares[x.id] = 1; });
@@ -598,7 +614,7 @@ document.addEventListener('click', async (e) => {
         if (free) free[S.sel] = 1;
         else {
           if (it.qty > 6) it.open = true;
-          toast(`All ${it.qty} are taken. Tap a slot to share it, or your own to give it up.`);
+          toast(`All ${it.qty} are taken. Tap a slot to share it.`, { label: 'Share equally', act: 'whole', id: it.id });
         }
         break;
       }
