@@ -4,6 +4,7 @@ A phone-first PWA: scan a bill, add people, tap who shared what, share the resul
 
 - `public/` — the app (static files, no build step)
 - `functions/api/scan.js` — Cloudflare Pages Function that reads a bill photo through OpenRouter
+- `public/ocr.js` and `public/tess/` — Tesseract.js fallback: reads the bill on the phone when the scan service fails or there is no internet
 - `lib/extract.js` — prompt, JSON schema, arithmetic checks, cheap → strong escalation
 - `scripts/bench.mjs` — compares models on your own bills
 
@@ -21,6 +22,10 @@ A phone-first PWA: scan a bill, add people, tap who shared what, share the resul
 - *Background scan.* There is no wait screen. A status strip shows progress on every step, and the user can add people while the bill is read. Assigning items waits until reading is done.
 
 **Slow models.** Free vision models have taken about 140 s. The app makes one request per model (`tier: "cheap"`, then `"strong"`), waits up to 200 s for each, and keeps the screen awake. The function waits up to `MODEL_TIMEOUT_MS` (default 170 s) per model and sends a blank line every 10 s so the connection never looks idle.
+
+## Offline fallback (Tesseract.js)
+
+If `/api/scan` fails (OpenRouter down, timeout, no key) or the phone is offline, the app reads the bill on the device with Tesseract.js and a rough line parser, then shows a note to check the result. It is less accurate than the vision model. Tesseract.js, its wasm core and the English data (about 10 MB) live in `public/tess/`; the service worker downloads them in the background on the first online visit, so offline use works without scanning a bill first. No server setup is needed.
 
 ## Run locally
 

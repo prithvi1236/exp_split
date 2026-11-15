@@ -1,8 +1,13 @@
-const CACHE = 'splitbill-v12';
-const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
+const CACHE = 'splitbill-v14';
+const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'ocr.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
+const OCR_FILES = ['tess/tesseract.min.js', 'tess/worker.min.js', 'tess/tesseract-core-lstm.wasm.js', 'tess/tesseract-core-simd-lstm.wasm.js', 'tess/eng.traineddata.gz'];
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  e.waitUntil(caches.open(CACHE).then((c) => {
+    // The OCR files are large: fetch them in the background so a slow connection never blocks the install.
+    OCR_FILES.forEach((f) => c.add(f).catch(() => {}));
+    return c.addAll(SHELL);
+  }).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (e) => {
@@ -24,6 +29,11 @@ self.addEventListener('fetch', (e) => {
     }
     return res;
   };
+  // Big OCR files never change: serve from cache first.
+  if (sameOrigin && new URL(req.url).pathname.includes('/tess/')) {
+    e.respondWith(caches.match(req).then((hit) => hit || fetch(req).then(put)));
+    return;
+  }
   if (!sameOrigin || new URL(req.url).pathname.includes('/api/')) return;
   // App files: fresh when online, cached when offline.
   e.respondWith(fetch(req).then(put).catch(() => caches.match(req, { ignoreSearch: true })));

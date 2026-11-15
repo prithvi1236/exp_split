@@ -464,6 +464,13 @@ async function callScan(image, tier, onItem) {
   } finally { clearTimeout(timer); }
 }
 
+/* Fallback reader: Tesseract.js on the device (works offline once its files are cached). */
+async function offlineScan(image) {
+  scanning.phase = 'Reading on this device'; scanning.t0 = Date.now(); scanLive();
+  const { ocrImage, parseBillText } = await import('./ocr.js');
+  return parseBillText(await ocrImage(image));
+}
+
 function scanTick() {
   if (!scanning) return;
   const s = Math.floor((Date.now() - scanning.t0) / 1000), n = scanning.items.length;
@@ -490,8 +497,15 @@ async function scan(file) {
   };
   try {
     const image = await shrink(file);
-    let data = await callScan(image, 'cheap', onItem);
-    if (!data.verified) {
+    let data;
+    try {
+      if (!navigator.onLine) throw Object.assign(new Error('offline'), { fallback: true });
+      data = await callScan(image, 'cheap', onItem);
+    } catch (e) {
+      if (scanCancelled || e.message === 'not_bill' || e.message === 'too_large') throw e;
+      data = await offlineScan(image);             // OpenRouter or the network is down: read it on the device
+    }
+    if (!data.verified && data.source !== 'ocr') {
       scanning.phase = 'Double-checking the numbers'; scanning.t0 = Date.now(); scanLive();
       try {
         const second = await callScan(image, 'strong', onItem);
@@ -503,7 +517,7 @@ async function scan(file) {
     S.items.push(...data.items.map((i) => ({ id: uid(), shares: {}, name: i.name, qty: i.qty, unit: i.unit, total: i.total, flag: !!i.flag })));
     if (first && ['₹', '$', '€', '£', '¥'].includes(data.currency)) S.cur = data.currency;
     if (first && data.total != null && cents(data.total) !== subtotal()) S.total = data.total;
-    S.note = data.verified ? null : (data.issues[0] || "The numbers don't add up.") + ' Please check against your bill.';
+    S.note = data.source === 'ocr' ? 'Read on this device with basic OCR, so names and prices may be off. Please check against your bill.' : data.verified ? null : (data.issues[0] || "The numbers don't add up.") + ' Please check against your bill.';
     const n = data.items.length;
     toast(data.verified ? `Bill read: ${n} item${n > 1 ? 's' : ''}, totals match ✓` : `Bill read: ${n} item${n > 1 ? 's' : ''} — please check them`);
   } catch (e) {
