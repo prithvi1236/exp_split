@@ -460,6 +460,7 @@ function render() {
 /* ---------- shared bill: keeping every phone in step ---------- */
 let flushing = false, pollT = null, retryT = null, offline = false;
 let stale = false, pressing = false;
+const toldFull = new Set();       // ids of picks that already found every unit taken on this phone
 
 /* What this phone shows is always the server's bill plus this phone's own unconfirmed changes on top. */
 function rebase() {
@@ -473,7 +474,8 @@ function adopt(d) {
   R.base = d.doc; R.ver = d.ver;
   if (d.me) R.me = d.me;
   rebase();
-  if (d.missed?.some((m) => m.why === 'full')) toast('Someone just took the last one. Tap a slot to share it.');
+  // Only a unit that looked free on this phone and was gone on the server is news.
+  if (d.missed?.filter((m) => m.why === 'full' && !toldFull.delete(m.o)).length) toast('Someone just took the last one. Tap a slot to share it.');
   softRender();
 }
 /* Redraw for a change that came from someone else, but never under a finger or a keyboard. */
@@ -866,8 +868,11 @@ document.addEventListener('click', async (e) => {
       const all = host() && pickedAll(), units = slots(it), k = units && el.dataset.k != null ? Number(el.dataset.k) : null;
       const sh = units ? (k != null ? units[k] : null) : it.shares;
       const shown = !it.auto && (sh ? (all ? isEveryone(sh) : hasPicked(sh)) : all && units.every(isEveryone));
-      const out = act({ t: 'pick', id, k, sel: S.sel.slice(), all, on: !shown, free: !!sh && !sharersOf(sh).length });
+      const op = { t: 'pick', id, k, sel: S.sel.slice(), all, on: !shown, free: !!sh && !sharersOf(sh).length };
+      const out = act(op);
       if (out.miss === 'full') {
+        toldFull.add(op.o);                   // already said so here: the server's answer need not say it again
+
         if (it.qty > 6) openIds.add(id);
         if (host()) toast(`All ${it.qty} are taken. Tap a slot to share it.`, { label: 'Share equally', act: 'whole', id });
         else toast(`All ${it.qty} are taken. Tap one to share it.`);
