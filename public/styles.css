@@ -48,6 +48,15 @@ h1, h2, p { margin: 0; }
   padding: calc(14px + env(safe-area-inset-top)) 16px 6px;
 }
 .top h1 { font-size: 20px; letter-spacing: -0.01em; }
+.top .acts { display: flex; align-items: center; gap: 12px; min-width: 0; }
+/* Who this phone belongs to; tap to change the name */
+.mechip {
+  display: inline-flex; align-items: center; gap: 5px; max-width: 132px; padding: 5px 10px;
+  border: 1px solid var(--line); border-radius: 999px; background: var(--card);
+  font-size: 13px; font-weight: 600;
+}
+.mechip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mechip svg { flex: none; color: var(--muted); }
 .link { color: var(--accent); font-weight: 600; font-size: 14px; padding: 6px 0; }
 
 .steps { display: flex; gap: 6px; padding: 8px 16px 12px; }
@@ -104,6 +113,14 @@ main { flex: 1; overflow-y: auto; padding: 4px 16px 24px; }
 .empty h2 { font-size: 22px; margin-bottom: 6px; }
 .empty p { color: var(--muted); margin-bottom: 22px; }
 .empty .btn { margin-bottom: 10px; }
+.empty .hi { margin-bottom: 14px; }
+.empty .hi .link { font-size: inherit; padding: 0; }
+.mefield { text-align: left; margin-bottom: 14px; }
+.mefield label { display: block; font-size: 13px; font-weight: 600; color: var(--muted); }
+.mefield input {
+  display: block; width: 100%; height: 50px; margin-top: 6px; padding: 0 14px; border-radius: 12px;
+  border: 1px solid var(--line); background: var(--card); color: var(--text); font-weight: 400;
+}
 
 /* Totals */
 .totals .row { padding: 11px 14px; }

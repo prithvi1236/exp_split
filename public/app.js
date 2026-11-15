@@ -8,7 +8,7 @@ const $ = (s) => document.querySelector(s);
 const KEY = 'splitbill.v1', NAMES = 'splitbill.names', CUR = 'splitbill.cur', ROOM = 'splitbill.room.', MYNAME = 'splitbill.me';
 const STEPS = ['Bill', 'Split', 'Result'];
 
-const view = $('#view'), nextBtn = $('#next'), backBtn = $('#back'), sheet = $('#sheet'), personSheet = $('#personSheet');
+const view = $('#view'), nextBtn = $('#next'), backBtn = $('#back'), sheet = $('#sheet'), personSheet = $('#personSheet'), meSheet = $('#meSheet');
 let R = loadRoom();               // the shared bill this phone is in, or null when the bill is only on this device
 let S = load();
 let editingId = null, editingPerson = null;
@@ -22,7 +22,7 @@ function guessCur() {
   return { IN: '₹', US: '$', GB: '£', CA: '$', AU: '$', JP: '¥' }[r] ||
     (['DE', 'FR', 'ES', 'IT', 'NL', 'IE', 'PT', 'AT', 'BE', 'FI'].includes(r) ? '€' : '₹');
 }
-function fresh() { return { v: 3, step: 0, items: [], people: [], sel: [], multi: false, total: null, note: null, cur: guessCur(), locked: false }; }
+function fresh() { return { v: 3, step: 0, items: [], people: [], sel: [], multi: false, me: null, total: null, note: null, cur: guessCur(), locked: false }; }
 function load() {
   if (R) return Object.assign(fresh(), R.ui);        // the bill itself comes from the room: see rebase()
   try {
@@ -46,6 +46,21 @@ function loadRoom() {
   // key: only the host has one. token: this phone's secret. me: the person this phone joined as.
   // base: the bill as the server last sent it. pending: changes made here that the server has not confirmed yet.
   return Object.assign({ id, key: null, token: secret(), me: null, ver: 0, base: null, pending: [], ui: {} }, r);
+}
+/* The name this phone's owner goes by. Asked for once, on the first screen, and kept for every bill. */
+function myName() { try { return localStorage.getItem(MYNAME) || ''; } catch { return ''; } }
+function setMyName(name) { try { localStorage.setItem(MYNAME, name); } catch {} }
+const selfId = () => (R ? R.me : S.me);          // this phone's owner as a person on the bill, if they are on it
+/* A bill that starts on this phone has its owner on it from the start. */
+function ensureSelf() {
+  const name = myName();
+  if (R || !name || S.me != null) return;
+  const same = S.people.find((x) => x.name.toLowerCase() === name.toLowerCase());
+  if (same) { S.me = same.id; return; }
+  if (S.items.length || S.people.length) return;   // a bill begun before there was a name: leave it as it is
+  const id = uid();
+  act({ t: 'person-add', p: id, name });
+  S.me = id; S.sel = [id];
 }
 function loadNames() { try { return JSON.parse(localStorage.getItem(NAMES)) || []; } catch { return []; } }
 function rememberName(name) {
@@ -141,6 +156,10 @@ function billView() {
       <div class="art">🧾</div>
       <h2>Start with your bill</h2>
       <p>Take a photo and we'll read the items for you.</p>
+      ${myName() ? `<p class="hi">Hi, ${esc(myName())} · <button class="link" data-act="edit-me">Edit</button></p>`
+      : `<form id="meForm" class="mefield"><label>Your name
+          <input id="meName" type="text" placeholder="As the group will see it" autocomplete="off" autocapitalize="words" enterkeyhint="done" maxlength="24">
+        </label></form>`}
       <button class="btn primary block" data-act="scan">📷 Scan a bill</button>
       <button class="btn ghost block" data-act="add-item">Type items instead</button>
     </div>`;
@@ -189,10 +208,10 @@ function assignView() {
   const group = S.people.filter((p) => S.sel.includes(p.id));
   const all = pickedAll(), one = group.length === 1 ? group[0] : null;
   const untouched = isHost && S.people.length > 1 && S.items.length > 0 && S.items.every((i) => pieces(i).every((pc) => !sharersOf(pc.shares).length));
-  const open = isHost && (adding || !S.people.length);
+  const open = isHost && (adding || S.people.length < 2);
   const left = isHost ? unassigned().length : 0;
   const st = status(), base = Object.fromEntries(st.r.per.map((r) => [r.p.id, r.base]));
-  const saved = (() => { try { return localStorage.getItem(MYNAME) || ''; } catch { return ''; } })();
+  const saved = myName();
   const top = !isHost ? ''
     : R ? `<div class="banner calm"><span class="grow"><b>Shared with the group</b>
         <div class="sub">${S.people.length ? `${st.ok.size} of ${S.people.length} confirmed` : 'Waiting for people to join'}${offline ? ' · reconnecting…' : ''}</div></span>
@@ -234,7 +253,7 @@ function assignView() {
       ${recents.map((n) => `<button class="chip" data-act="add-recent" data-name="${esc(n)}">+ ${esc(n)}</button>`).join('')}</div>` : ''}` : ''}
     <p class="lead">${!isHost ? (self && S.multi ? (S.sel.length > 1 ? 'Tap what you and the ticked people shared.' : 'Tick who shared with you, then tap what you shared.')
       : self ? `Tap everything you had, ${esc(self.name)}. <button class="link" data-act="not-me">Not ${esc(self.name)}?</button>` : 'Pick your name to start.')
-      : !S.people.length ? (R ? 'Waiting for people to join. You can also add them yourself.' : 'Add everyone splitting this bill.')
+      : S.people.length < 2 ? (R ? 'Waiting for people to join. You can also add them yourself.' : S.people.length ? 'Add everyone else splitting this bill.' : 'Add everyone splitting this bill.')
       : all ? 'Tap what everyone shared.'
       : one ? `Tap everything ${esc(one.name)} had.`
       : group.length <= 3 ? `Tap what ${esc(group.slice(0, -1).map((p) => p.name).join(', '))} and ${esc(group[group.length - 1].name)} shared.`
@@ -406,8 +425,12 @@ function shareText() {
 }
 
 function render() {
+  ensureSelf();
   save();
   const isHost = host(), first = isHost ? 0 : 1;
+  const mine = S.people.find((p) => p.id === selfId())?.name || myName();
+  $('#meChip').hidden = !mine;
+  $('#meChip').innerHTML = `<span>${esc(mine)}</span>${PENCIL}`;
   $('#reset').textContent = R && !isHost ? 'Leave' : 'New bill';
   if (R && !R.base) {             // a shared bill that has not arrived yet
     $('#steps').innerHTML = '';
@@ -420,7 +443,7 @@ function render() {
   $('#steps').innerHTML = (isHost ? STEPS : [null, 'Pick yours', 'Your share']).map((s, i) => s &&
     `<button class="${i === S.step ? 'now' : i < S.step ? 'done' : ''}" data-act="step" data-step="${i}" ${S.locked || (i > S.step && blocker(i)) ? 'disabled' : ''}>${i + 1 - first}. ${s}</button>`).filter(Boolean).join('');
   // Whatever is being typed, and whichever cards are open, survive the redraw.
-  const typed = ['pName', 'jName'].map((id) => { const el = document.getElementById(id); return el && { id, v: el.value, focus: document.activeElement === el }; }).filter(Boolean);
+  const typed = ['pName', 'jName', 'meName'].map((id) => { const el = document.getElementById(id); return el && { id, v: el.value, focus: document.activeElement === el }; }).filter(Boolean);
   const openCards = [...view.querySelectorAll('details[open]')].map((d) => d.dataset.p);
   const railX = $('.rail')?.scrollLeft;
   view.innerHTML = (isHost ? [billView, assignView, resultView] : [null, assignView, myView])[S.step]();
@@ -440,7 +463,7 @@ function render() {
   $('#scanStrip').hidden = !scanning;
   scanTick();
   backBtn.hidden = S.step === first || S.locked;
-  $('#reset').hidden = !R && !S.items.length && !S.people.length && !scanning;
+  $('#reset').hidden = !R && !S.items.length && !S.people.some((p) => p.id !== S.me) && !scanning;   // nothing to clear yet
   const block = S.step < 2 ? blocker(S.step + 1) : '';
   const np = nextPerson();
   let label, off = !!block && !np;
@@ -480,7 +503,7 @@ function adopt(d) {
 }
 /* Redraw for a change that came from someone else, but never under a finger or a keyboard. */
 function softRender() {
-  if (pressing || sheet.open || personSheet.open || ['total', 'cur'].includes(document.activeElement?.id)) { stale = true; return; }
+  if (pressing || sheet.open || personSheet.open || meSheet.open || ['total', 'cur'].includes(document.activeElement?.id)) { stale = true; return; }
   stale = false;
   render();
 }
@@ -488,7 +511,7 @@ const settle = () => setTimeout(() => { if (stale) softRender(); }, 60);
 document.addEventListener('pointerdown', () => { pressing = true; });
 ['pointerup', 'pointercancel'].forEach((ev) => document.addEventListener(ev, () => { pressing = false; settle(); }));
 document.addEventListener('focusout', settle);
-[sheet, personSheet].forEach((d) => d.addEventListener('close', settle));
+[sheet, personSheet, meSheet].forEach((d) => d.addEventListener('close', settle));
 
 /* Sends this phone's changes, oldest first, one request at a time. Each op has an id, so a request
    that is retried after a dropped connection is never applied twice. */
@@ -574,15 +597,14 @@ async function shareBill() {
   if (R) return invite();
   if (scanning) { toast('Still reading your bill…'); return; }
   // The host is on the bill too: add them under their name before it goes out.
-  let mine = null, name = '';
-  try { name = localStorage.getItem(MYNAME) || ''; } catch {}
-  if (!name) name = (prompt('Your name, as the group will see it') || '').trim().slice(0, 24);
-  if (name) {
-    try { localStorage.setItem(MYNAME, name); } catch {}
+  const name = myName();
+  if (!name) { openMe(); return; }
+  let mine = S.people.find((x) => x.id === S.me)?.id || null;
+  if (S.me == null) {               // a bill begun before there was a name
     const same = S.people.find((x) => x.name.toLowerCase() === name.toLowerCase());
     mine = same ? same.id : uid();
     if (!same) act({ t: 'person-add', p: mine, name });
-  }
+  }                                 // otherwise the host took themself off this bill, and stays off it
   try {
     const res = await fetch('api/room', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -603,7 +625,7 @@ function join(name) {
   name = name.trim().slice(0, 24);
   if (!name) return;
   R.me = act({ t: 'join', p: uid(), name }).me;
-  try { localStorage.setItem(MYNAME, name); } catch {}
+  setMyName(name);
   render();
 }
 
@@ -701,7 +723,7 @@ function scanTick() {
 /* Refresh the live list, but never while the user is typing in a field. */
 function scanLive() {
   scanTick();
-  if (S.step <= 1 && !/^(INPUT|SELECT)$/.test(document.activeElement?.tagName || '') && !sheet.open && !personSheet.open) render();
+  if (S.step <= 1 && !/^(INPUT|SELECT)$/.test(document.activeElement?.tagName || '') && !sheet.open && !personSheet.open && !meSheet.open) render();
 }
 
 async function scan(file) {
@@ -785,7 +807,9 @@ document.addEventListener('click', async (e) => {
   if (!host() && HOST_ONLY.includes(name)) return;
   if (!['sel', 'del-person', 'edit-person', 'close-sheet'].includes(name)) delFor = null;
   const it = S.items.find((i) => i.id === id);
+  if (['scan', 'add-item'].includes(name) && !myName()) { if (!takeName()) return; render(); }
   switch (name) {
+    case 'edit-me': openMe(); return;
     case 'scan': if (scanning) { toast('Still reading the last bill'); return; } $('#file').click(); return;
     case 'add-item': openSheet(); return;
     case 'edit-item': openSheet(id); return;
@@ -915,6 +939,22 @@ function removePerson(id) {
   if (gone) toast(`Removed ${gone.name}`);
 }
 
+/* The first screen asks for the name before a bill can be started. */
+function takeName() {
+  const el = $('#meName');
+  if (!el) { openMe(); return false; }
+  const name = el.value.trim().slice(0, 24);
+  if (!name) { toast('Enter your name first'); el.focus(); return false; }
+  setMyName(name);
+  return true;
+}
+function openMe() {
+  $('#mName').value = S.people.find((x) => x.id === selfId())?.name || myName();
+  $('#mErr').hidden = true;
+  meSheet.showModal();
+  $('#mName').focus();
+}
+
 function openPerson(id) {
   const who = S.people.find((x) => x.id === id);
   if (!who) return;
@@ -943,8 +983,27 @@ document.addEventListener('submit', (e) => {
       : S.people.some((x) => x.id !== editingPerson && x.name.toLowerCase() === name.toLowerCase()) ? `${name} is already added.` : '';
     if (err) { $('#eErr').textContent = err; $('#eErr').hidden = false; return; }
     act({ t: 'person-name', p: editingPerson, name });
+    if (editingPerson === selfId()) setMyName(name);
     rememberName(name);
     personSheet.close();
+    render();
+    return;
+  }
+  if (e.target.id === 'meForm') {
+    e.preventDefault();
+    if (takeName()) render();
+    return;
+  }
+  if (e.target.id === 'meEdit') {
+    e.preventDefault();
+    const name = $('#mName').value.trim().slice(0, 24), id = selfId();
+    const onBill = S.people.some((x) => x.id === id);
+    const err = !name ? 'Enter a name.'
+      : onBill && S.people.some((x) => x.id !== id && x.name.toLowerCase() === name.toLowerCase()) ? `${name} is already added.` : '';
+    if (err) { $('#mErr').textContent = err; $('#mErr').hidden = false; return; }
+    if (onBill) act({ t: 'person-name', p: id, name });      // the group sees the new name too
+    setMyName(name);
+    meSheet.close();
     render();
     return;
   }
@@ -970,7 +1029,7 @@ document.addEventListener('change', (e) => {
   } else if (e.target.id === 'cur') { act({ t: 'cur', v: e.target.value }); render(); }
 });
 
-[sheet, personSheet].forEach((d) => d.addEventListener('click', (e) => { if (e.target === d) d.close(); }));
+[sheet, personSheet, meSheet].forEach((d) => d.addEventListener('click', (e) => { if (e.target === d) d.close(); }));
 
 if (R?.base) rebase();
 render();

@@ -16,7 +16,10 @@
 <body>
   <header class="top">
     <h1>Split the Bill</h1>
-    <button id="reset" class="link" data-act="reset">New bill</button>
+    <div class="acts">
+      <button id="meChip" class="mechip" data-act="edit-me" aria-label="Change your name" hidden></button>
+      <button id="reset" class="link" data-act="reset">New bill</button>
+    </div>
   </header>
 
   <nav id="steps" class="steps" aria-label="Steps"></nav>
@@ -76,6 +79,21 @@
       </div>
     </form>
     <div id="lift" class="rail lift" hidden></div>
+  </dialog>
+
+  <!-- The name this phone's owner goes by on every bill -->
+  <dialog id="meSheet" class="sheet">
+    <form id="meEdit" method="dialog" novalidate>
+      <h2>Your name</h2>
+      <label>Name, as the group will see it
+        <input id="mName" type="text" autocomplete="off" autocapitalize="words" maxlength="24" enterkeyhint="done">
+      </label>
+      <p id="mErr" class="err" hidden></p>
+      <div class="sheet-actions">
+        <button type="button" class="btn ghost" data-act="close-sheet">Cancel</button>
+        <button type="submit" class="btn primary">Save</button>
+      </div>
+    </form>
   </dialog>
 
   <div id="toast" class="toast" role="status" hidden></div>
