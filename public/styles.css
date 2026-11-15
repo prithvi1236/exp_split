@@ -300,3 +300,11 @@ details[open] .chev { transform: rotate(90deg); }
   display: block; margin: 8px auto 2px; padding: 7px 14px; border-radius: 999px;
   background: var(--bg); color: var(--text); font-weight: 700;
 }
+
+/* Shared bills */
+.banner .sub { font-size: 13px; color: var(--muted); }
+.join h2 { font-size: 18px; margin-bottom: 12px; }
+.join .addrow { margin: 0; }
+.join .addrow input { background: var(--bg); }
+.card > .lines:first-child { border-top: 0; }
+.rail [role="tab"][tabindex="-1"] { cursor: default; }

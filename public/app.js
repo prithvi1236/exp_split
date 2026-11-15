@@ -1,14 +1,20 @@
-/* Split the Bill — the split lives on the device (localStorage); only a scanned photo goes to /api/scan. */
+/* Split the Bill — a bill lives on this device (localStorage) until its host shares it.
+   A shared bill lives in a room on the server (api/room) and every phone in it is kept in step.
+   A scanned photo goes to /api/scan. */
+import * as C from './core.js';
+const { cents, allocate, canCount, slots } = C;
+
 const $ = (s) => document.querySelector(s);
-const KEY = 'splitbill.v1', NAMES = 'splitbill.names';
+const KEY = 'splitbill.v1', NAMES = 'splitbill.names', CUR = 'splitbill.cur', ROOM = 'splitbill.room.', MYNAME = 'splitbill.me';
 const STEPS = ['Bill', 'Split', 'Result'];
-const COLORS = ['#0f766e', '#c2410c', '#6d28d9', '#be185d', '#1d4ed8', '#4d7c0f', '#b45309', '#475569'];
 
 const view = $('#view'), nextBtn = $('#next'), backBtn = $('#back'), sheet = $('#sheet'), personSheet = $('#personSheet');
+let R = loadRoom();               // the shared bill this phone is in, or null when the bill is only on this device
 let S = load();
 let editingId = null, editingPerson = null;
 let delFor = null;               // person whose tile badge is showing delete instead of rename
 let adding = false;               // the add-person panel on the Split step is open
+const openIds = new Set();        // quantity items whose units are unfolded on this phone
 
 /* ---------- state ---------- */
 function guessCur() {
@@ -16,8 +22,9 @@ function guessCur() {
   return { IN: '₹', US: '$', GB: '£', CA: '$', AU: '$', JP: '¥' }[r] ||
     (['DE', 'FR', 'ES', 'IT', 'NL', 'IE', 'PT', 'AT', 'BE', 'FI'].includes(r) ? '€' : '₹');
 }
-function fresh() { return { v: 3, step: 0, items: [], people: [], sel: [], multi: false, total: null, note: null, cur: guessCur() }; }
+function fresh() { return { v: 3, step: 0, items: [], people: [], sel: [], multi: false, total: null, note: null, cur: guessCur(), locked: false }; }
 function load() {
+  if (R) return Object.assign(fresh(), R.ui);        // the bill itself comes from the room: see rebase()
   try {
     const old = JSON.parse(localStorage.getItem(KEY));
     // v1 had a separate People step: Bill, People, Assign, Result.
@@ -28,94 +35,75 @@ function load() {
     return s;
   } catch { return fresh(); }
 }
+/* The room comes from the invite link (?r=code), or is the one this phone was last in. */
+function loadRoom() {
+  let id = null, r = null;
+  try { id = new URLSearchParams(location.search).get('r') || localStorage.getItem(CUR); } catch {}
+  if (!id || !C.ID.test(id)) return null;
+  try { r = JSON.parse(localStorage.getItem(ROOM + id)); } catch {}
+  try { localStorage.setItem(CUR, id); } catch {}
+  if (new URLSearchParams(location.search).get('r') !== id) history.replaceState(null, '', '?r=' + id);
+  // key: only the host has one. token: this phone's secret. me: the person this phone joined as.
+  // base: the bill as the server last sent it. pending: changes made here that the server has not confirmed yet.
+  return Object.assign({ id, key: null, token: secret(), me: null, ver: 0, base: null, pending: [], ui: {} }, r);
+}
 function loadNames() { try { return JSON.parse(localStorage.getItem(NAMES)) || []; } catch { return []; } }
 function rememberName(name) {
   const list = [name, ...loadNames().filter((n) => n.toLowerCase() !== name.toLowerCase())].slice(0, 12);
   try { localStorage.setItem(NAMES, JSON.stringify(list)); } catch {}
 }
-function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch {} }
-const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+function save() {
+  try {
+    if (R) { R.ui = { step: S.step, sel: S.sel, multi: S.multi }; localStorage.setItem(ROOM + R.id, JSON.stringify(R)); }
+    else localStorage.setItem(KEY, JSON.stringify(S));
+  } catch {}
+}
+let uidN = 0;
+function uid() { return Date.now().toString(36) + (uidN++ % 1296).toString(36).padStart(2, '0') + Math.random().toString(36).slice(2, 6); }
+function secret() { return [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, '0')).join(''); }
+
+/* Every change to the bill goes through here, as an op (see core.js). On a shared bill the op is
+   applied here straight away, so the tap feels instant, and queued for the server. */
+function act(op) {
+  op.o = uid();
+  const out = C.apply(S, op);
+  if (R) { R.pending.push(op); flush(); }
+  return out;
+}
+const host = () => !R || !!R.key;                                       // may edit the bill and pick for anyone
+const me = () => (R && !R.key && S.people.find((p) => p.id === R.me)) || null;   // on a guest's phone: who they are
 
 /* ---------- money ---------- */
-const cents = (n) => Math.round((Number(n) || 0) * 100);
 const fmt = (c) => S.cur + (c / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-/* Split `amount` cents by weights so the parts always add up exactly. */
-function allocate(amount, weights) {
-  const W = weights.reduce((a, b) => a + b, 0);
-  if (!W) return weights.map(() => 0);
-  const sign = amount < 0 ? -1 : 1, abs = Math.abs(amount);
-  const raw = weights.map((w) => (abs * w) / W);
-  const out = raw.map(Math.floor);
-  let left = abs - out.reduce((a, b) => a + b, 0);
-  raw.map((r, i) => [r - out[i], i]).sort((a, b) => b[0] - a[0]).forEach(([, i]) => { if (left-- > 0) out[i]++; });
-  return out.map((v) => v * sign);
-}
-
-const subtotal = () => S.items.reduce((a, i) => a + cents(i.total), 0);
-const billTotal = () => (S.total != null ? cents(S.total) : subtotal());
-const sharersOf = (shares) => S.people.filter((p) => shares[p.id] > 0);
+const subtotal = () => C.subtotal(S);
+const billTotal = () => C.billTotal(S);
+const sharersOf = (shares) => C.sharersOf(S, shares);
 const sharers = (item) => sharersOf(item.shares);
-
-/* A quantity item (2 to 24 of something) is split into one slot per unit, kept in `parts`.
-   Each slot has its own sharers, so one unit can go to one person and the next be shared.
-   Splits saved before slots existed are carried over the first time the item is read. */
-const canCount = (it) => Number.isInteger(it.qty) && it.qty > 1 && it.qty <= 24;
-function slots(it) {
-  if (!canCount(it) || it.whole) return null;        // `whole`: shared as one item, by price not by unit
-  if (!it.parts || it.parts.length !== it.qty) {
-    const ids = Object.keys(it.shares || {}).filter((id) => it.shares[id] > 0);
-    // Counts that add up to the quantity ("Asha had 2, Ravi 1") become one slot each; anything else was an equal split.
-    const owners = ids.reduce((a, id) => a + it.shares[id], 0) === it.qty ? ids.flatMap((id) => Array(it.shares[id]).fill(id)) : null;
-    it.parts = Array.from({ length: it.qty }, (_, k) => (owners ? { [owners[k]]: 1 } : Object.fromEntries(ids.map((id) => [id, 1]))));
-    it.shares = {}; it.uneven = false; delete it.lump;
-  }
-  return it.parts;
-}
-/* What gets split. Slots held by the same people are split together as one amount,
-   so six rotis between three people come to the same total for each of them. */
-function pieces(it) {
-  const parts = slots(it);
-  if (!parts) return [{ shares: it.shares, amt: cents(it.total), n: 1 }];
-  const amts = allocate(cents(it.total), parts.map(() => 1)), groups = new Map();
-  parts.forEach((shares, k) => {
-    const key = sharersOf(shares).map((p) => p.id).join();
-    const g = groups.get(key) || { shares, amt: 0, n: 0 };
-    g.amt += amts[k]; g.n++;
-    groups.set(key, g);
-  });
-  return [...groups.values()];
-}
-const finished = (it) => pieces(it).every((pc) => sharersOf(pc.shares).length);
-const unassigned = () => S.items.filter((i) => !finished(i));
-const everyone = () => Object.fromEntries(S.people.map((x) => [x.id, 1]));
+const pieces = (it) => C.pieces(S, it);
+const unassigned = () => S.items.filter((i) => !C.finished(S, i));
+const compute = () => C.compute(S);
 /* The rail selection: one person, or several picked together (`S.multi`). */
 const pickedAll = () => S.people.length > 1 && S.sel.length === S.people.length;
 const hasPicked = (shares) => S.sel.length > 0 && S.sel.every((id) => shares[id] > 0);
-const isEveryone = (shares) => S.people.length > 0 && sharersOf(shares).length === S.people.length;
-
-function compute() {
-  const per = S.people.map((p) => ({ p, base: 0, extra: 0, lines: [] }));
-  const idx = Object.fromEntries(S.people.map((p, i) => [p.id, i]));
-  for (const it of S.items) for (const pc of pieces(it)) {
-    const who = sharersOf(pc.shares);
-    const w = who.map((p) => pc.shares[p.id]);
-    const W = w.reduce((a, b) => a + b, 0);
-    allocate(pc.amt, w).forEach((amt, k) => {
-      const row = per[idx[who[k].id]];
-      row.base += amt;
-      row.lines.push({ name: it.name + (pc.n > 1 ? ` ×${pc.n}` : ''), amt, frac: who.length > 1 ? `${w[k]}/${W}` : '' });
-    });
-  }
-  const extra = billTotal() - subtotal();
-  allocate(extra, per.map((r) => r.base)).forEach((e, i) => { per[i].extra = e; });
-  per.forEach((r) => { r.total = r.base + r.extra; });
-  return { per, extra, total: billTotal() };
+const isEveryone = (shares) => C.isEveryone(S, shares);
+/* Confirming stores what was agreed to: the person's items and the bill's tax and tip. If either
+   changes later, the stored value no longer matches and they are simply asked to confirm again. */
+const sig = (row, r) => `${row.base}:${r.extra}`;
+function status() {
+  const r = compute();
+  return { r, ok: new Set(r.per.filter((x) => x.p.ok === sig(x, r)).map((x) => x.p.id)) };
 }
 
 /* ---------- navigation ---------- */
 function blocker(step) {
+  if (S.locked) return '';
+  if (!host()) {
+    if (step >= 2 && !me()) return 'Pick your name first';
+    if (step >= 2 && !compute().per.find((x) => x.p.id === R.me).lines.length) return 'Tap what you had';
+    return '';
+  }
   if (step >= 1 && !S.items.length && !scanning) return 'Add at least one item';
   if (step >= 2 && S.people.length < 2) return 'Add at least 2 people';
   if (step >= 2 && scanning) return 'Still reading your bill…';
@@ -188,33 +176,55 @@ const av = (p, cls = '') => `<span class="dot ${cls}" style="--c:${p.color}">${e
 
 /* Person-first: pick someone in the rail, then tap everything they had. */
 function assignView() {
+  const isHost = host(), self = me();
+  // A guest picks for themself ("Self"), or for themself plus whoever shared it with them ("Together").
+  if (!isHost) {
+    if (!self) { S.sel = []; S.multi = false; }
+    else if (!S.multi) S.sel = [self.id];
+    else if (!S.sel.includes(self.id)) S.sel = [self.id, ...S.sel];
+  }
   S.sel = S.people.filter((p) => S.sel.includes(p.id)).map((p) => p.id);      // drop anyone removed, keep rail order
-  if (!S.sel.length && S.people.length) S.sel = [S.people[0].id];
+  if (isHost && !S.sel.length && S.people.length) S.sel = [S.people[0].id];
   if (S.people.length < 2 || S.sel.length < 1) S.multi = false;
   const group = S.people.filter((p) => S.sel.includes(p.id));
-  const all = pickedAll(), me = group.length === 1 ? group[0] : null;
-  const untouched = S.people.length > 1 && S.items.length > 0 && S.items.every((i) => pieces(i).every((pc) => !sharersOf(pc.shares).length));
-  const open = adding || !S.people.length;
-  const left = unassigned().length;
-  const base = Object.fromEntries(compute().per.map((r) => [r.p.id, r.base]));
+  const all = pickedAll(), one = group.length === 1 ? group[0] : null;
+  const untouched = isHost && S.people.length > 1 && S.items.length > 0 && S.items.every((i) => pieces(i).every((pc) => !sharersOf(pc.shares).length));
+  const open = isHost && (adding || !S.people.length);
+  const left = isHost ? unassigned().length : 0;
+  const st = status(), base = Object.fromEntries(st.r.per.map((r) => [r.p.id, r.base]));
+  const saved = (() => { try { return localStorage.getItem(MYNAME) || ''; } catch { return ''; } })();
+  const top = !isHost ? ''
+    : R ? `<div class="banner calm"><span class="grow"><b>Shared with the group</b>
+        <div class="sub">${S.people.length ? `${st.ok.size} of ${S.people.length} confirmed` : 'Waiting for people to join'}${offline ? ' · reconnecting…' : ''}</div></span>
+        <button class="link" data-act="share-bill">Invite</button></div>`
+    : S.items.length ? `<div class="banner calm"><span class="grow">Let everyone pick their own items on their phone.</span>
+        <button class="link" data-act="share-bill">Share bill</button></div>` : '';
+  const joinCard = isHost || self ? '' : `<div class="card pad join">
+      <h2>Who are you?</h2>
+      ${S.people.length ? `<div class="recent">${S.people.map((p) => `<button class="chip" data-act="join" data-name="${esc(p.name)}">${esc(p.name)}</button>`).join('')}</div>` : ''}
+      <form class="addrow" id="joinForm">
+        <input id="jName" type="text" placeholder="${S.people.length ? 'Not listed? Type your name' : 'Your name'}" aria-label="Your name" value="${esc(saved)}"
+          autocomplete="off" autocapitalize="words" enterkeyhint="go" maxlength="24">
+        <button class="btn primary" type="submit">Join</button>
+      </form></div>`;
   const recents = loadNames().filter((n) => !S.people.some((x) => x.name.toLowerCase() === n.toLowerCase()));
-  return `${S.people.length > 1 ? `<div class="seg" role="group" aria-label="Pick for">
-      <button data-act="mode" data-m="one" aria-pressed="${!S.multi}">One person</button>
+  return `${top}${joinCard}${(isHost || self) && S.people.length > 1 ? `<div class="seg" role="group" aria-label="Pick for">
+      <button data-act="mode" data-m="one" aria-pressed="${!S.multi}">${isHost ? 'One person' : 'Self'}</button>
       <button data-act="mode" data-m="multi" aria-pressed="${S.multi}">Together</button>
     </div>` : ''}
     <div class="rail ${S.multi ? 'multi' : ''}" role="tablist" aria-label="Who are you picking for?" ${S.multi ? 'aria-multiselectable="true"' : ''}>
       ${S.people.map((p) => `<div class="tile">
-        <button role="tab" aria-selected="${S.sel.includes(p.id)}" data-act="sel" data-p="${p.id}" style="--c:${p.color}">
-          ${av(p)}<span class="rname">${esc(p.name)}</span><span class="rtot">${fmt(base[p.id])}</span></button>
+        <button role="tab" aria-selected="${S.sel.includes(p.id)}" ${isHost || S.multi ? `data-act="sel" data-p="${p.id}"` : 'tabindex="-1"'} style="--c:${p.color}">
+          ${av(p)}<span class="rname">${esc(p.name)}</span><span class="rtot">${R && st.ok.has(p.id) ? '✓ ' : ''}${fmt(base[p.id])}</span></button>
         ${S.multi ? `<span class="check" style="--c:${p.color}" aria-hidden="true">${S.sel.includes(p.id) ? '✓' : ''}</span>`
-        : delFor === p.id
+        : !isHost ? '' : delFor === p.id
           ? `<button class="edit del" data-act="del-person" data-p="${p.id}" aria-label="Remove ${esc(p.name)}">${TRASH}</button>`
           : `<button class="edit" data-act="edit-person" data-p="${p.id}" aria-label="Rename ${esc(p.name)}">${PENCIL}</button>`}
       </div>`).join('')}
       ${S.multi ? `<button role="tab" aria-selected="${all}" data-act="sel" data-p="all">
         <span class="dot every">All</span><span class="rname">Everyone</span><span class="rtot">select all</span></button>` : ''}
-      <button class="adder" aria-expanded="${open}" data-act="add-person">
-        <span class="dot every">+</span><span class="rname">Add</span><span class="rtot">person</span></button>
+      ${isHost ? `<button class="adder" aria-expanded="${open}" data-act="add-person">
+        <span class="dot every">+</span><span class="rname">Add</span><span class="rtot">person</span></button>` : ''}
     </div>
     ${open ? `<form class="addrow" id="personForm">
       <input id="pName" type="text" placeholder="Name" aria-label="Name" autocomplete="off" autocapitalize="words" enterkeyhint="done" maxlength="24">
@@ -222,9 +232,11 @@ function assignView() {
     </form>
     ${recents.length ? `<div class="recent"><span class="sub">Add again</span>
       ${recents.map((n) => `<button class="chip" data-act="add-recent" data-name="${esc(n)}">+ ${esc(n)}</button>`).join('')}</div>` : ''}` : ''}
-    <p class="lead">${!S.people.length ? 'Add everyone splitting this bill.'
+    <p class="lead">${!isHost ? (self && S.multi ? (S.sel.length > 1 ? 'Tap what you and the ticked people shared.' : 'Tick who shared with you, then tap what you shared.')
+      : self ? `Tap everything you had, ${esc(self.name)}. <button class="link" data-act="not-me">Not ${esc(self.name)}?</button>` : 'Pick your name to start.')
+      : !S.people.length ? (R ? 'Waiting for people to join. You can also add them yourself.' : 'Add everyone splitting this bill.')
       : all ? 'Tap what everyone shared.'
-      : me ? `Tap everything ${esc(me.name)} had.`
+      : one ? `Tap everything ${esc(one.name)} had.`
       : group.length <= 3 ? `Tap what ${esc(group.slice(0, -1).map((p) => p.name).join(', '))} and ${esc(group[group.length - 1].name)} shared.`
       : `Tap what these ${group.length} shared.`}
 </p>
@@ -234,7 +246,7 @@ function assignView() {
       <button class="link" data-act="rest-all">Split between everyone</button></div>` : ''}
     ${S.items.length ? `<div class="card">${S.items.map((it) => {
       const who = sharers(it), total = cents(it.total);
-      const tint = me ? me.color : group.length ? 'var(--accent)' : 'var(--line)';
+      const tint = one ? one.color : group.length ? 'var(--accent)' : 'var(--line)';
       const each = (amt, n) => { const e = allocate(amt, Array(n).fill(1)); return `${e[0] !== e[n - 1] ? 'about ' : ''}${fmt(e[n - 1])} each`; };
       const row = ({ name, sub, warn, badges, amt, on, tick }) => `<button class="row pick" aria-pressed="${on}"
           data-act="pick" data-id="${it.id}" ${S.sel.length ? '' : 'disabled'}>
@@ -248,7 +260,7 @@ function assignView() {
         const free = units.filter((sh) => !sharersOf(sh).length).length;
         const mine = all ? 0 : units.filter(hasPicked).length;
         const on = !it.auto && (all ? units.every(isEveryone) : mine > 0);   // an untouched table split is not this person's pick
-        const big = it.qty > 6, show = (!big || it.open) && !it.auto;   // many units, or an untouched table split, stay folded into counts
+        const big = it.qty > 6, show = (!big || openIds.has(it.id)) && !it.auto;   // many units, or an untouched table split, stay folded into counts
         const groups = new Map();
         units.forEach((sh) => {
           const w = sharersOf(sh);
@@ -257,8 +269,9 @@ function assignView() {
         const summary = [...groups.values()].map(({ w, n }) => `<span class="cnt ${w.length > 1 ? 'grp' : ''}" style="--c:${w[0].color}">${
           w.length > 3 ? `${w.length} people` : esc(w.map((p) => p.name[0].toUpperCase()).join('+'))}${n > 1 ? ` ×${n}` : ''}</span>`).join('');
         const toggle = big ? `<button class="link" data-act="toggle-slots" data-id="${it.id}">${show ? 'Hide each one' : 'Show each one'}</button>` : '';
-        const tip = it.auto ? 'Shared by everyone · tap to give it to the picked people only' : show && free < it.qty ? 'Tap a filled slot to share it' : '';
-        const asOne = `<button class="link" data-act="whole" data-id="${it.id}">Share as one</button>`;
+        const tip = it.auto ? (isHost ? 'Shared by everyone · tap to give it to the picked people only' : 'Shared by everyone · tap if only some of you had it') : show && free < it.qty ? 'Tap a filled slot to share it' : '';
+        const asOne = isHost ? `<button class="link" data-act="whole" data-id="${it.id}">Share as one</button>` : '';
+        const hints = [tip, asOne, toggle].filter(Boolean).join(' · ');
         return `<div class="item ${on ? 'on' : ''}" style="--c:${tint}">
           ${row({ name: esc(it.name), amt: total, on, tick: all ? '✓' : String(mine), warn: free > 0,
             sub: `${it.qty} ordered · ${free ? `${free} left` : 'all taken'}`, badges: show ? '' : summary })}
@@ -268,16 +281,16 @@ function assignView() {
               aria-label="${w.length ? `One ${esc(it.name)}: ${esc(w.map((p) => p.name).join(', '))}` : `One ${esc(it.name)}, free`}" ${S.sel.length ? '' : 'disabled'}>${
               w.length ? w.map((p) => av(p, 'sm')).join('') : '+'}</button>`;
           }).join('')}</div>` : ''}
-          <p class="hint">${[tip, asOne, toggle].filter(Boolean).join(' · ')}</p></div>`;
+          ${hints ? `<p class="hint">${hints}</p>` : ''}</div>`;
       }
 
       const on = !it.auto && (all ? who.length === S.people.length : hasPicked(it.shares));
       const parts = allocate(total, who.map((p) => it.shares[p.id]));
-      const sub = [it.qty !== 1 ? `Qty ${it.qty}` : '', who.length >= 2 && !it.uneven ? each(total, who.length) : ''].filter(Boolean).join(' · ');
-      const link = [who.length >= 2 ? `<button class="link" data-act="uneven" data-id="${it.id}">Split unevenly</button>` : '',
+      const sub = [it.qty !== 1 ? `Qty ${it.qty}` : '', who.length < 2 ? '' : !it.uneven ? each(total, who.length) : isHost ? '' : 'Split unevenly'].filter(Boolean).join(' · ');
+      const link = !isHost ? '' : [who.length >= 2 ? `<button class="link" data-act="uneven" data-id="${it.id}">Split unevenly</button>` : '',
         it.whole && canCount(it) ? `<button class="link" data-act="by-unit" data-id="${it.id}">Split by unit</button>` : ''].filter(Boolean).join(' · ');
       let extra = link ? `<p class="hint">${link}</p>` : '';
-      if (who.length >= 2 && it.uneven) {
+      if (isHost && who.length >= 2 && it.uneven) {
         extra = `<div class="uneven">${who.map((p, k) => `<div class="urow">
             <span class="grow name">${esc(p.name)}</span>
             <span class="stepper"><button data-act="dec" data-id="${it.id}" data-p="${p.id}" aria-label="Less">−</button>
@@ -290,36 +303,58 @@ function assignView() {
         ${row({ name: esc(it.name), amt: total, on, warn: !who.length,
           sub: !who.length ? `${sub ? sub + ' · ' : ''}Nobody yet` : it.auto ? `Everyone · ${sub}` : sub,
           badges: it.auto ? '<span class="cnt grp">All</span>' : who.map((p) => av(p, 'sm')).join('') })}${
-          it.auto ? '<p class="hint">Tap to give it to the picked people only</p>' : extra}</div>`;
+          it.auto ? `<p class="hint">${isHost ? 'Tap to give it to the picked people only' : 'Tap if only some of you had it'}</p>` : extra}</div>`;
     }).join('')}</div>` : ''}
     ${liveItems()}`;
 }
 
 /* While items are still unpicked, the main button walks through the people in order. */
 function nextPerson() {
-  if (S.step !== 1 || !unassigned().length) return null;
+  if (!host() || S.step !== 1 || !unassigned().length) return null;
   if (S.multi || S.sel.length !== 1) return null;       // walking person by person only makes sense with one picked
   const i = S.people.findIndex((p) => p.id === S.sel[0]);
   return i >= 0 && i < S.people.length - 1 ? S.people[i + 1] : null;
 }
 
 function resultView() {
-  const r = compute();
-  return `<div class="grand"><div class="muted small">Bill total</div><div class="big">${fmt(r.total)}</div>
+  const { r, ok } = status();
+  const room = !R ? '' : S.locked
+    ? `<div class="banner calm"><span class="grow"><b>Final.</b> Nobody can change the split now.</span><button class="link" data-act="unlock">Reopen</button></div>`
+    : `<p class="lead">${ok.size} of ${r.per.length} confirmed${offline ? ' · reconnecting…' : ''}. Finalize when you are happy with it.</p>`;
+  return `${room}<div class="grand"><div class="muted small">Bill total</div><div class="big">${fmt(r.total)}</div>
       <div class="check">✓ Shares add up to ${fmt(r.per.reduce((a, x) => a + x.total, 0))}</div></div>
-    ${r.per.map(({ p, total, lines, extra }) => `<details class="card">
+    ${r.per.map(({ p, total, lines, extra }) => `<details class="card" data-p="${p.id}">
       <summary class="row">${av(p)}
-        <span class="grow"><div class="name">${esc(p.name)}</div><div class="sub">${lines.length} item${lines.length === 1 ? '' : 's'}</div></span>
+        <span class="grow"><div class="name">${esc(p.name)}</div><div class="sub">${lines.length} item${lines.length === 1 ? '' : 's'}${!R ? '' : ok.has(p.id) ? ' · confirmed ✓' : S.locked ? '' : ' · not confirmed yet'}</div></span>
         <span class="owes">${fmt(total)}</span><span class="chev">›</span></summary>
       <div class="lines">
         ${lines.map((l) => `<div><span>${esc(l.name)}${l.frac ? ` <span class="muted">(${l.frac})</span>` : ''}</span><span>${fmt(l.amt)}</span></div>`).join('') || '<div class="muted">Nothing</div>'}
         ${extra ? `<div class="muted"><span>${extra > 0 ? 'Tax / tip share' : 'Discount share'}</span><span>${fmt(extra)}</span></div>` : ''}
       </div>
+      ${R && !S.locked && !ok.has(p.id) ? `<button class="row add" data-act="ok-for" data-p="${p.id}">Confirm for ${esc(p.name)}</button>` : ''}
       <button class="row add" data-act="share-one" data-id="${p.id}">Send ${esc(p.name)} their share</button></details>`).join('')}
     <div class="pair">
       <button class="btn ghost" data-act="image">Share as image</button>
       <button class="btn ghost" data-act="copy">Copy as text</button>
     </div>`;
+}
+
+/* A guest's last step: their own share to check and confirm, and how far everyone else is. */
+function myView() {
+  const { r, ok } = status(), x = r.per.find((row) => row.p.id === R.me), left = S.locked ? [] : unassigned();
+  const names = left.slice(0, 3).map((i) => i.name).join(', ') + (left.length > 3 ? ` and ${left.length - 3} more` : '');
+  return `${x ? `<div class="grand"><div class="muted small">Your share, ${esc(x.p.name)}</div><div class="big">${fmt(x.total)}</div>
+      <div class="check">${S.locked ? 'Final ✓' : ok.has(x.p.id) ? '✓ Confirmed. You are all done.' : 'Check your items, then confirm below.'}</div></div>
+    <div class="card"><div class="lines">
+      ${x.lines.map((l) => `<div><span>${esc(l.name)}${l.frac ? ` <span class="muted">(${l.frac})</span>` : ''}</span><span>${fmt(l.amt)}</span></div>`).join('') || '<div class="muted">Nothing</div>'}
+      ${x.extra ? `<div class="muted"><span>${x.extra > 0 ? 'Tax / tip share' : 'Discount share'}</span><span>${fmt(x.extra)}</span></div>` : ''}
+    </div></div>`
+    : `<div class="grand"><div class="muted small">Bill total</div><div class="big">${fmt(r.total)}</div><div class="check">Final ✓</div></div>`}
+    ${left.length ? `<div class="banner"><span class="grow">Nobody has picked ${esc(names)} yet.</span><button class="link" data-act="back">Is it yours?</button></div>` : ''}
+    <div class="card">${r.per.map(({ p, total }) => `<div class="row">${av(p)}
+      <span class="grow"><div class="name">${esc(p.name)}${p.id === R.me ? ' (you)' : ''}</div>
+      <div class="sub">${ok.has(p.id) ? 'Confirmed ✓' : S.locked ? '' : 'Not confirmed yet'}</div></span>
+      <span class="amt">${fmt(total)}</span></div>`).join('')}</div>`;
 }
 
 function personText(id) {
@@ -372,37 +407,202 @@ function shareText() {
 
 function render() {
   save();
-  if (blocker(S.step)) { while (S.step > 0 && blocker(S.step)) S.step--; }
-  $('#steps').innerHTML = STEPS.map((s, i) =>
-    `<button class="${i === S.step ? 'now' : i < S.step ? 'done' : ''}" data-act="step" data-step="${i}" ${i > S.step && blocker(i) ? 'disabled' : ''}>${i + 1}. ${s}</button>`).join('');
-  const pn = $('#pName'), typed = pn ? pn.value : '', hadFocus = pn && document.activeElement === pn;
+  const isHost = host(), first = isHost ? 0 : 1;
+  $('#reset').textContent = R && !isHost ? 'Leave' : 'New bill';
+  if (R && !R.base) {             // a shared bill that has not arrived yet
+    $('#steps').innerHTML = '';
+    view.innerHTML = `<p class="lead">${offline ? "Can't reach the bill. Check your connection." : 'Opening the bill…'}</p>`;
+    $('#scanStrip').hidden = true; $('.bottom').hidden = true; $('#reset').hidden = false;
+    return;
+  }
+  if (S.locked) S.step = 2;
+  else { S.step = Math.max(S.step, first); while (S.step > first && blocker(S.step)) S.step--; }
+  $('#steps').innerHTML = (isHost ? STEPS : [null, 'Pick yours', 'Your share']).map((s, i) => s &&
+    `<button class="${i === S.step ? 'now' : i < S.step ? 'done' : ''}" data-act="step" data-step="${i}" ${S.locked || (i > S.step && blocker(i)) ? 'disabled' : ''}>${i + 1 - first}. ${s}</button>`).filter(Boolean).join('');
+  // Whatever is being typed, and whichever cards are open, survive the redraw.
+  const typed = ['pName', 'jName'].map((id) => { const el = document.getElementById(id); return el && { id, v: el.value, focus: document.activeElement === el }; }).filter(Boolean);
+  const openCards = [...view.querySelectorAll('details[open]')].map((d) => d.dataset.p);
   const railX = $('.rail')?.scrollLeft;
-  view.innerHTML = [billView, assignView, resultView][S.step]();
+  view.innerHTML = (isHost ? [billView, assignView, resultView] : [null, assignView, myView])[S.step]();
   const rail = $('.rail');
   if (rail) {                     // keep the rail where it was, with the picked person in view
     if (railX != null) rail.scrollLeft = railX;
     const on = rail.querySelector('[aria-selected="true"]'), cur = on?.closest('.tile') || on;
     if (cur) {
-      const pad = 8, end = rail.clientWidth - rail.querySelector('.adder').offsetWidth - pad;
+      const pad = 8, end = rail.clientWidth - (rail.querySelector('.adder')?.offsetWidth || 0) - pad;
       const l = cur.offsetLeft - rail.scrollLeft;   // the rail is sticky, so it is the offset parent
       if (l < pad) rail.scrollLeft += l - pad;
       else if (l + cur.offsetWidth > end) rail.scrollLeft += l + cur.offsetWidth - end;
     }
   }
-  if ($('#pName') && typed) { $('#pName').value = typed; if (hadFocus) $('#pName').focus(); }
+  typed.forEach(({ id, v, focus }) => { const el = document.getElementById(id); if (el && (v || focus)) { el.value = v; if (focus) el.focus(); } });
+  view.querySelectorAll('details[data-p]').forEach((d) => { d.open = openCards.includes(d.dataset.p); });
   $('#scanStrip').hidden = !scanning;
   scanTick();
-  backBtn.hidden = S.step === 0;
-  $('#reset').hidden = !S.items.length && !S.people.length && !scanning;
-  const block = blocker(S.step + 1);
+  backBtn.hidden = S.step === first || S.locked;
+  $('#reset').hidden = !R && !S.items.length && !S.people.length && !scanning;
+  const block = S.step < 2 ? blocker(S.step + 1) : '';
   const np = nextPerson();
-  nextBtn.disabled = S.step < 2 && !!block && !np;
-  nextBtn.textContent = S.step === 2 ? 'Share the split'
-    : np ? `Next: ${np.name}`
-    : block && (S.step > 0 || S.items.length || scanning) ? block
-    : ['Next: who had what?', 'See the split'][S.step];
+  let label, off = !!block && !np;
+  if (S.step === 2) {
+    const st = R && !S.locked && !isHost ? status() : null, x = st?.r.per.find((row) => row.p.id === R.me);
+    off = !!x && st.ok.has(x.p.id);
+    label = !R || S.locked ? 'Share the split' : isHost ? 'Finalize the split' : off ? 'Confirmed ✓' : `Confirm ${fmt(x.total)}`;
+  } else if (np) label = `Next: ${np.name}`;
+  else if (block && (S.step > 0 || S.items.length || scanning)) label = block;
+  else label = isHost ? ['Next: who had what?', 'See the split'][S.step] : 'Review my share';
+  nextBtn.disabled = off;
+  nextBtn.textContent = label;
   nextBtn.hidden = S.step === 0 && !S.items.length && !scanning;
   document.querySelector('.bottom').hidden = nextBtn.hidden && backBtn.hidden;
+}
+
+/* ---------- shared bill: keeping every phone in step ---------- */
+let flushing = false, pollT = null, retryT = null, offline = false;
+let stale = false, pressing = false;
+
+/* What this phone shows is always the server's bill plus this phone's own unconfirmed changes on top. */
+function rebase() {
+  const d = structuredClone(R.base);
+  C.DOC.forEach((k) => { S[k] = d[k]; });
+  R.pending.forEach((op) => C.apply(S, op));
+  if (R.me && !S.people.some((p) => p.id === R.me)) R.me = null;     // the host removed this person
+}
+function adopt(d) {
+  if (!R || d.ver < R.ver) return;                  // an older answer that arrived late
+  R.base = d.doc; R.ver = d.ver;
+  if (d.me) R.me = d.me;
+  rebase();
+  if (d.missed?.some((m) => m.why === 'full')) toast('Someone just took the last one. Tap a slot to share it.');
+  softRender();
+}
+/* Redraw for a change that came from someone else, but never under a finger or a keyboard. */
+function softRender() {
+  if (pressing || sheet.open || personSheet.open || ['total', 'cur'].includes(document.activeElement?.id)) { stale = true; return; }
+  stale = false;
+  render();
+}
+const settle = () => setTimeout(() => { if (stale) softRender(); }, 60);
+document.addEventListener('pointerdown', () => { pressing = true; });
+['pointerup', 'pointercancel'].forEach((ev) => document.addEventListener(ev, () => { pressing = false; settle(); }));
+document.addEventListener('focusout', settle);
+[sheet, personSheet].forEach((d) => d.addEventListener('close', settle));
+
+/* Sends this phone's changes, oldest first, one request at a time. Each op has an id, so a request
+   that is retried after a dropped connection is never applied twice. */
+async function flush() {
+  if (!R || flushing || !R.pending.length) return;
+  flushing = true; clearTimeout(retryT);
+  const room = R, batch = R.pending.slice();
+  let wait = 0;
+  try {
+    const res = await fetch(`api/room/${room.id}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ops: batch, token: room.token, key: room.key || undefined }),
+    });
+    if (R !== room) return;
+    if (res.status === 404) { gone(); return; }
+    if (res.status >= 500 || res.status === 409 || res.status === 429) throw new Error('retry');
+    room.pending = room.pending.filter((op) => !batch.includes(op));
+    offline = false;
+    if (res.ok) adopt(await res.json()); else { rebase(); softRender(); }      // refused for good: drop it and show the truth
+  } catch {
+    if (R === room) {
+      if (!offline) toast('No connection. Your changes are kept and will be sent when you are back.');
+      offline = true; wait = 3000;
+    }
+  } finally { flushing = false; }
+  if (R === room && R.pending.length) { if (wait) retryT = setTimeout(flush, wait); else flush(); }
+}
+/* Asks for other people's changes. Costs one tiny request when nothing changed. */
+async function poll() {
+  clearTimeout(pollT);
+  if (!R) return;
+  const room = R;
+  if (!document.hidden && !flushing && !R.pending.length) {
+    try {
+      const res = await fetch(`api/room/${room.id}?v=${room.ver}`, { cache: 'no-store' });
+      if (R !== room) return;
+      if (res.status === 404) { gone(); return; }
+      const was = offline;
+      offline = !res.ok;
+      // An answer that crossed one of our own changes on the way is skipped: the change's own answer is newer.
+      if (res.status === 200 && !flushing && !R.pending.length) adopt(await res.json());
+      else if (was !== offline) softRender();
+    } catch { if (R === room && !offline) { offline = true; softRender(); } }
+  }
+  if (R === room) pollT = setTimeout(poll, 2000);
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { poll(); flush(); } });
+addEventListener('online', () => { poll(); flush(); });
+
+function exitRoom(forget) {
+  try { localStorage.removeItem(CUR); if (forget) localStorage.removeItem(ROOM + R.id); } catch {}
+  clearTimeout(pollT); clearTimeout(retryT);
+  history.replaceState(null, '', location.pathname);
+  R = null; S = load(); adding = false;
+  render();
+}
+function gone() { exitRoom(true); toast('That shared bill is no longer available.'); }
+
+function inviteLink() { return `${location.origin}${location.pathname}?r=${R.id}`; }
+async function invite() {
+  const url = inviteLink();
+  // A phone gets its share sheet; a laptop (mouse or trackpad) gets the link on the clipboard.
+  const laptop = matchMedia('(pointer: fine)').matches;
+  try {
+    if (laptop || !navigator.share) throw new Error('no share sheet');
+    await navigator.share({ title: 'Split the Bill', text: 'Pick what you had on our bill', url });
+  } catch (e) {
+    if (e.name === 'AbortError') return;
+    try { await navigator.clipboard.writeText(url); toast('Link copied. Send it to the group.'); }
+    catch {
+      // Clipboard access can be refused once the tap is no longer fresh: fall back to the old copy command.
+      const box = Object.assign(document.createElement('textarea'), { value: url });
+      document.body.append(box); box.select();
+      let ok = false;
+      try { ok = document.execCommand('copy'); } catch {}
+      box.remove();
+      toast(ok ? 'Link copied. Send it to the group.' : 'Bill shared. Click Invite to copy the link.');
+    }
+  }
+}
+/* The host puts the bill in a room. From here on this phone is just one more member of it, with the host's key. */
+async function shareBill() {
+  if (R) return invite();
+  if (scanning) { toast('Still reading your bill…'); return; }
+  // The host is on the bill too: add them under their name before it goes out.
+  let mine = null, name = '';
+  try { name = localStorage.getItem(MYNAME) || ''; } catch {}
+  if (!name) name = (prompt('Your name, as the group will see it') || '').trim().slice(0, 24);
+  if (name) {
+    try { localStorage.setItem(MYNAME, name); } catch {}
+    const same = S.people.find((x) => x.name.toLowerCase() === name.toLowerCase());
+    mine = same ? same.id : uid();
+    if (!same) act({ t: 'person-add', p: mine, name });
+  }
+  try {
+    const res = await fetch('api/room', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ doc: Object.fromEntries(C.DOC.map((k) => [k, S[k]])) }),
+    });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) { toast(d.message || "Couldn't share the bill. Try again."); return; }
+    if (mine) { S.sel = [mine]; S.multi = false; }
+    R = { id: d.id, key: d.key, token: secret(), me: mine, ver: d.ver, base: d.doc, pending: [], ui: {} };
+    try { localStorage.setItem(CUR, R.id); localStorage.removeItem(KEY); } catch {}
+    history.replaceState(null, '', '?r=' + R.id);
+    rebase(); render(); poll();
+    invite();
+  } catch { toast(navigator.onLine ? "Couldn't share the bill. Try again." : 'Sharing needs internet.'); }
+}
+
+function join(name) {
+  name = name.trim().slice(0, 24);
+  if (!name) return;
+  R.me = act({ t: 'join', p: uid(), name }).me;
+  try { localStorage.setItem(MYNAME, name); } catch {}
+  render();
 }
 
 /* ---------- item sheet ---------- */
@@ -434,10 +634,8 @@ $('#itemForm').addEventListener('submit', (e) => {
   if (err) { $('#fErr').textContent = err; $('#fErr').hidden = false; return; }
   const unit = $('#fUnit').value === '' ? null : Number($('#fUnit').value);
   const data = { name, qty, unit, total: Math.round(total * 100) / 100, flag: false };
-  const it = S.items.find((i) => i.id === editingId);
-  // A changed quantity makes the old claims meaningless, so start that item over.
-  if (it && it.qty !== qty) { it.shares = {}; delete it.parts; it.uneven = it.whole = false; }
-  if (it) Object.assign(it, data); else S.items.push({ id: uid(), shares: {}, ...data });
+  if (S.items.some((i) => i.id === editingId)) act({ t: 'item-set', id: editingId, data: { name, qty, unit, total: data.total } });
+  else act({ t: 'items-add', items: [{ id: uid(), ...data }] });
   sheet.close();
   render();
 });
@@ -535,11 +733,12 @@ async function scan(file) {
       } catch (e) { if (scanCancelled) throw e; /* keep the first reading and let the user check it */ }
     }
     if (!data.items.length) { toast("Couldn't find any items. Try a sharper photo, or type them in."); return; }
-    const first = !S.items.length;
-    S.items.push(...data.items.map((i) => ({ id: uid(), shares: {}, name: i.name, qty: i.qty, unit: i.unit, total: i.total, flag: !!i.flag })));
-    if (first && ['₹', '$', '€', '£', '¥'].includes(data.currency)) S.cur = data.currency;
-    if (first && data.total != null && cents(data.total) !== subtotal()) S.total = data.total;
-    S.note = data.source === 'ocr' ? 'Read on this device with basic OCR, so names and prices may be off. Please check against your bill.' : data.verified ? null : (data.issues[0] || "The numbers don't add up.") + ' Please check against your bill.';
+    act({
+      t: 'items-add',
+      items: data.items.map((i) => ({ id: uid(), name: i.name, qty: i.qty, unit: i.unit, total: i.total, flag: !!i.flag })),
+      cur: ['₹', '$', '€', '£', '¥'].includes(data.currency) ? data.currency : null, total: data.total,
+      note: data.source === 'ocr' ? 'Read on this device with basic OCR, so names and prices may be off. Please check against your bill.' : data.verified ? null : (data.issues[0] || "The numbers don't add up.") + ' Please check against your bill.',
+    });
     const n = data.items.length;
     toast(data.verified ? `Bill read: ${n} item${n > 1 ? 's' : ''}, totals match ✓` : `Bill read: ${n} item${n > 1 ? 's' : ''} — please check them`);
   } catch (e) {
@@ -574,21 +773,24 @@ async function copy(text) {
 }
 
 /* ---------- events ---------- */
+const HOST_ONLY = ['scan', 'add-item', 'edit-item', 'delete-item', 'dismiss-note', 'del-person', 'edit-person', 'add-person', 'add-recent',
+  'rest-all', 'all-equal', 'whole', 'by-unit', 'uneven', 'inc', 'dec', 'share-bill', 'ok-for', 'unlock'];
+
 document.addEventListener('click', async (e) => {
   const el = e.target.closest('[data-act]');
   if (!el) return;
-  const { act, id, p } = el.dataset;
-  if (!['sel', 'del-person', 'edit-person', 'close-sheet'].includes(act)) delFor = null;
+  const { act: name, id, p } = el.dataset;
+  if (!host() && HOST_ONLY.includes(name)) return;
+  if (!['sel', 'del-person', 'edit-person', 'close-sheet'].includes(name)) delFor = null;
   const it = S.items.find((i) => i.id === id);
-  if (it && ['uneven', 'whole', 'by-unit', 'inc', 'dec'].includes(act)) delete it.auto;
-  switch (act) {
+  switch (name) {
     case 'scan': if (scanning) { toast('Still reading the last bill'); return; } $('#file').click(); return;
     case 'add-item': openSheet(); return;
     case 'edit-item': openSheet(id); return;
     case 'close-sheet': el.closest('dialog').close(); return;
-    case 'dismiss-note': S.note = null; break;
+    case 'dismiss-note': act({ t: 'note' }); break;
     case 'cancel-scan': scanCancelled = true; scanCtl?.abort(); return;
-    case 'delete-item': S.items = S.items.filter((i) => i.id !== editingId); sheet.close(); break;
+    case 'delete-item': act({ t: 'item-del', id: editingId }); sheet.close(); break;
     case 'del-person':
       if (delFor !== p) return;               // only the armed tile's badge removes
       if (personSheet.open) personSheet.close();
@@ -603,57 +805,53 @@ document.addEventListener('click', async (e) => {
       adding = !adding; render();
       if (adding) $('#pName')?.focus();
       return;
-    case 'rest-all':
-      unassigned().forEach((i) => {
-        const units = slots(i);
-        if (units) i.parts = units.map((sh) => (sharersOf(sh).length ? sh : everyone()));   // claimed slots stay as they are
-        else i.shares = everyone();
-      });
-      break;
-    case 'toggle-slots': it.open = !it.open; break;
-    case 'all-equal':                         // start from the usual case; the exceptions are then claimed one by one
-      S.items.forEach((i) => {
-        const units = slots(i);
-        if (units) i.parts = units.map(() => everyone()); else i.shares = everyone();
-        i.uneven = false; i.auto = true;
-      });
+    case 'rest-all': act({ t: 'rest-all' }); break;
+    case 'toggle-slots': if (!openIds.delete(id)) openIds.add(id); break;
+    case 'all-equal':
+      act({ t: 'all-equal' });
       toast('Everything is shared equally. Now tap what only some people had.');
       break;
     case 'mode':                              // One person ↔ Together; leaving Together keeps the first picked
       S.multi = el.dataset.m === 'multi'; delFor = null; adding = false;
       if (!S.multi) S.sel = S.sel.slice(0, 1);
       break;
-    case 'whole': {                           // share the whole item equally, by price, between whoever is on it
-      const ids = new Set((it.parts || []).flatMap((sh) => sharersOf(sh).map((x) => x.id)));
-      if (el.closest('#toast')) S.sel.forEach((x) => ids.add(x));   // whoever ran out of slots joins too
-      it.whole = true; it.open = false; delete it.parts;
-      it.shares = Object.fromEntries([...ids].map((x) => [x, 1]));
+    case 'whole':                             // from the "all taken" toast, whoever ran out of slots joins too
+      act({ t: 'whole', id, add: el.closest('#toast') ? S.sel.slice() : [] });
+      openIds.delete(id);
       $('#toast').hidden = true;
       break;
-    }
-    case 'by-unit': it.whole = it.uneven = false; it.shares = {}; delete it.parts; break;
-    case 'uneven':
-      it.uneven = !it.uneven;
-      if (!it.uneven) sharers(it).forEach((x) => { it.shares[x.id] = 1; });
-      break;
-    case 'inc': it.shares[p]++; break;
-    case 'dec': if (it.shares[p] > 1) it.shares[p]--; break;
+    case 'by-unit': act({ t: 'by-unit', id }); break;
+    case 'uneven': if (it) act({ t: 'uneven', id, on: !it.uneven }); break;
+    case 'inc': act({ t: 'weight', id, p, d: 1 }); break;
+    case 'dec': act({ t: 'weight', id, p, d: -1 }); break;
     case 'step': go(Number(el.dataset.step)); return;
     case 'back': go(S.step - 1); return;
     case 'next':
       if (nextPerson()) { S.sel = [nextPerson().id]; view.scrollTop = 0; break; }
       if (S.step < 2) return go(S.step + 1);
-      shareOut(shareText());
-      return;
+      if (!R || S.locked) { shareOut(shareText()); return; }
+      if (host()) {                           // finalize: from here nobody can change the split
+        const { r, ok } = status(), waiting = r.per.filter((x) => !ok.has(x.p.id)).map((x) => x.p.name);
+        if (waiting.length && !confirm(`${waiting.join(', ')} ${waiting.length > 1 ? 'have' : 'has'} not confirmed yet. Finalize anyway?`)) return;
+        act({ t: 'lock', on: true });
+        toast('Final. Everyone can see their share now.');
+      } else confirmShare(R.me);
+      break;
+    case 'ok-for': confirmShare(p); break;
+    case 'unlock': act({ t: 'lock', on: false }); break;
+    case 'share-bill': shareBill(); return;
+    case 'join': join(el.dataset.name); return;
+    case 'not-me': R.me = null; break;
     case 'share-one': shareOut(personText(id)); return;
     case 'image': shareImage(); return;
     case 'sel':
       adding = false;
       if (p === 'all') { S.sel = S.people.map((x) => x.id); S.multi = true; delFor = null; break; }
-      if (S.multi) {                          // picking several: each tap adds or drops a person, never the last one
+      if (!host() && !S.multi) return;        // in Self, a guest's rail is only for looking
+      if (S.multi) {                          // picking several: each tap adds or drops a person, never the last one (or a guest's own name)
         delFor = null;
         if (!S.sel.includes(p)) S.sel = [...S.sel, p];
-        else if (S.sel.length > 1) S.sel = S.sel.filter((x) => x !== p);
+        else if (S.sel.length > 1 && p !== me()?.id) S.sel = S.sel.filter((x) => x !== p);
         break;
       }
       // Tapping the active person again swaps their rename badge for delete, and back.
@@ -663,36 +861,26 @@ document.addEventListener('click', async (e) => {
     case 'add-recent': addPerson(el.dataset.name); break;
     case 'pick': {
       adding = false;
-      const all = pickedAll();
-      let units = slots(it);
-      const k = el.dataset.k;
-      // An item still on the untouched table split is handed to the picked people, not toggled.
-      if (it.auto) {
-        delete it.auto;
-        if (!all) { it.shares = {}; if (units) units = it.parts = units.map(() => ({})); }
+      if (!it || !S.sel.length) return;
+      // The op says what this tap means given what was on screen: put the picked people on, or take them off.
+      const all = host() && pickedAll(), units = slots(it), k = units && el.dataset.k != null ? Number(el.dataset.k) : null;
+      const sh = units ? (k != null ? units[k] : null) : it.shares;
+      const shown = !it.auto && (sh ? (all ? isEveryone(sh) : hasPicked(sh)) : all && units.every(isEveryone));
+      const out = act({ t: 'pick', id, k, sel: S.sel.slice(), all, on: !shown, free: !!sh && !sharersOf(sh).length });
+      if (out.miss === 'full') {
+        if (it.qty > 6) openIds.add(id);
+        if (host()) toast(`All ${it.qty} are taken. Tap a slot to share it.`, { label: 'Share equally', act: 'whole', id });
+        else toast(`All ${it.qty} are taken. Tap one to share it.`);
       }
-      const put = (sh) => S.sel.forEach((x) => { sh[x] = sh[x] || 1; });
-      if (units && k == null) {               // the row of a quantity item: take the next free slot
-        if (all) { const full = units.every(isEveryone); it.parts = units.map(() => (full ? {} : everyone())); break; }
-        const free = units.find((sh) => !sharersOf(sh).length);
-        if (free) put(free);
-        else {
-          if (it.qty > 6) it.open = true;
-          toast(`All ${it.qty} are taken. Tap a slot to share it.`, { label: 'Share equally', act: 'whole', id: it.id });
-        }
-        break;
-      }
-      const sh = units ? units[k] : it.shares;
-      if (all) {
-        const full = isEveryone(sh);
-        Object.keys(sh).forEach((key) => { delete sh[key]; });
-        if (!full) Object.assign(sh, everyone());
-      } else if (hasPicked(sh)) S.sel.forEach((x) => { delete sh[x]; });
-      else put(sh);
-      if (!units && sharers(it).length < 2) it.uneven = false;
       break;
     }
     case 'reset':
+      if (R) {
+        if (!confirm(host() ? 'Start a new bill? The shared one stays open for everyone else.' : 'Leave this bill?')) return;
+        if (scanning) { scanCancelled = true; scanCtl?.abort(); }
+        exitRoom(false);
+        return;
+      }
       if (confirm('Start a new bill? This clears the current one.')) { if (scanning) { scanCancelled = true; scanCtl?.abort(); } S = fresh(); adding = false; }
       break;
     default: return;
@@ -700,14 +888,16 @@ document.addEventListener('click', async (e) => {
   render();
 });
 
+function confirmShare(pid) {
+  const r = compute(), x = r.per.find((row) => row.p.id === pid);
+  if (x) act({ t: 'confirm', p: pid, sig: sig(x, r) });
+}
+
 function addPerson(name) {
   if (S.people.some((x) => x.name.toLowerCase() === name.toLowerCase())) { toast(`${name} is already added`); return false; }
-  const used = S.people.map((x) => x.color);
-  S.people.push({ id: uid(), name, color: COLORS.find((c) => !used.includes(c)) || COLORS[S.people.length % COLORS.length] });
-  const id = S.people[S.people.length - 1].id;
+  const id = uid();
+  act({ t: 'person-add', p: id, name });
   S.sel = [id]; S.multi = false;
-  // Anything still on the untouched table split includes the newcomer.
-  S.items.forEach((i) => { if (i.auto) (i.parts || [i.shares]).forEach((sh) => { sh[id] = 1; }); });
   adding = true;                  // stay open so several people can be added in a row
   rememberName(name);
   return true;
@@ -715,12 +905,7 @@ function addPerson(name) {
 
 function removePerson(id) {
   const gone = S.people.find((x) => x.id === id);
-  S.people = S.people.filter((x) => x.id !== id);
-  S.items.forEach((i) => {
-    delete i.shares[id];
-    i.parts?.forEach((sh) => { delete sh[id]; });
-    if (sharers(i).length < 2) i.uneven = false;
-  });
+  act({ t: 'person-del', p: id });
   delFor = null;
   if (gone) toast(`Removed ${gone.name}`);
 }
@@ -752,10 +937,15 @@ document.addEventListener('submit', (e) => {
     const err = !name ? 'Enter a name.'
       : S.people.some((x) => x.id !== editingPerson && x.name.toLowerCase() === name.toLowerCase()) ? `${name} is already added.` : '';
     if (err) { $('#eErr').textContent = err; $('#eErr').hidden = false; return; }
-    S.people.find((x) => x.id === editingPerson).name = name;
+    act({ t: 'person-name', p: editingPerson, name });
     rememberName(name);
     personSheet.close();
     render();
+    return;
+  }
+  if (e.target.id === 'joinForm') {
+    e.preventDefault();
+    join($('#jName').value);
     return;
   }
   if (e.target.id !== 'personForm') return;
@@ -770,12 +960,14 @@ document.addEventListener('submit', (e) => {
 document.addEventListener('change', (e) => {
   if (e.target.id === 'total') {
     const v = e.target.value.trim();
-    S.total = v === '' || !(Number(v) > 0) ? null : Math.round(Number(v) * 100) / 100;
+    act({ t: 'total', v: v === '' || !(Number(v) > 0) ? null : Math.round(Number(v) * 100) / 100 });
     render();
-  } else if (e.target.id === 'cur') { S.cur = e.target.value; render(); }
+  } else if (e.target.id === 'cur') { act({ t: 'cur', v: e.target.value }); render(); }
 });
 
 [sheet, personSheet].forEach((d) => d.addEventListener('click', (e) => { if (e.target === d) d.close(); }));
 
+if (R?.base) rebase();
 render();
+if (R) { poll(); flush(); }
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});

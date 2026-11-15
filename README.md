@@ -3,7 +3,9 @@
 A phone-first PWA: scan a bill, add people, tap who shared what, share the result.
 
 - `public/` — the app (static files, no build step)
+- `public/core.js` — the bill's maths and every change to it as a small op; runs in the app and on the server
 - `functions/api/scan.js` — Cloudflare Pages Function that reads a bill photo through OpenRouter
+- `functions/api/room/` and `lib/rooms.js` — shared bills, stored in D1
 - `public/ocr.js` and `public/tess/` — Tesseract.js fallback: reads the bill on the phone when the scan service fails or there is no internet
 - `lib/extract.js` — prompt, JSON schema, arithmetic checks, cheap → strong escalation
 - `scripts/bench.mjs` — compares models on your own bills
@@ -27,6 +29,19 @@ A phone-first PWA: scan a bill, add people, tap who shared what, share the resul
 
 If `/api/scan` fails (OpenRouter down, timeout, no key) or the phone is offline, the app reads the bill on the device with Tesseract.js and a rough line parser, then shows a note to check the result. It is less accurate than the vision model. Tesseract.js, its wasm core and the English data (about 10 MB) live in `public/tess/`; the service worker downloads them in the background on the first online visit, so offline use works without scanning a bill first. No server setup is needed.
 
+## Shared bills
+
+The host taps **Share bill** on the Split step and sends the link. Everyone who opens it picks their name, taps what they had, and confirms their share. The host can still add people, pick for anyone, confirm for someone without a phone, and finalize. Until a bill is shared it stays on the host's phone.
+
+**Roles.** The link (`?r=code`) lets anyone open the bill. The host's phone also holds a secret key, which is what allows editing items and finalizing. Each guest phone has its own token, tied to the person it joined as, and the server only lets it change that person's picks.
+
+**Simultaneous changes.** Phones never send the bill, only small ops that say what the person meant: "put me on this item", "one more roti for me". The server reads the bill, applies the ops, and saves only if the version is still the one it read; if someone else saved first, it reads again and re-applies. So two taps at the same moment both land, and when two people go for the last free unit one gets it and the other is told it is taken.
+
+- A phone applies its own op at once and shows the server's bill with its unsent ops on top, so taps feel instant and nothing jumps when the answer arrives.
+- Each op has an id. A request retried after a dropped connection is not applied twice. Ops made offline are kept and sent later.
+- Phones ask for changes every 2 seconds while the page is visible; an unchanged bill answers with an empty 204.
+- A confirmation stores the share that was agreed to. If that person's items or the bill's tax change afterwards, it lapses and they are asked again.
+
 ## Run locally
 
 ```bash
@@ -49,6 +64,7 @@ It prints pass rate, time to first item, total time and cost per bill for each m
 ## Deploy
 
 ```bash
+npx wrangler d1 create split-the-bill   # once; paste the id it prints into wrangler.toml
 npx wrangler pages deploy
 npx wrangler pages secret put OPENROUTER_API_KEY
 ```

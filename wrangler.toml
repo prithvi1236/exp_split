@@ -12,3 +12,10 @@ MODEL_TIMEOUT_MS = "170000"
 # The first read uses CHEAP_*; the double-check (only when the numbers don't add up) uses STRONG_*.
 CHEAP_REASONING = "off"
 STRONG_REASONING = "low"
+
+# Shared bills live in D1 (created with `npx wrangler d1 create split-the-bill`).
+# The binding must stay "DB": that is the name the room function reads.
+[[d1_databases]]
+binding = "DB"
+database_name = "split-the-bill"
+database_id = "1858851c-8502-4e17-91cf-37536c7bfad1"
