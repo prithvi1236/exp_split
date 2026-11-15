@@ -198,16 +198,21 @@ function assignView() {
   const left = unassigned().length;
   const base = Object.fromEntries(compute().per.map((r) => [r.p.id, r.base]));
   const recents = loadNames().filter((n) => !S.people.some((x) => x.name.toLowerCase() === n.toLowerCase()));
-  return `<div class="rail" role="tablist" aria-label="Who are you picking for?">
+  return `${S.people.length > 1 ? `<div class="seg" role="group" aria-label="Pick for">
+      <button data-act="mode" data-m="one" aria-pressed="${!S.multi}">One person</button>
+      <button data-act="mode" data-m="multi" aria-pressed="${S.multi}">Together</button>
+    </div>` : ''}
+    <div class="rail ${S.multi ? 'multi' : ''}" role="tablist" aria-label="Who are you picking for?" ${S.multi ? 'aria-multiselectable="true"' : ''}>
       ${S.people.map((p) => `<div class="tile">
         <button role="tab" aria-selected="${S.sel.includes(p.id)}" data-act="sel" data-p="${p.id}" style="--c:${p.color}">
           ${av(p)}<span class="rname">${esc(p.name)}</span><span class="rtot">${fmt(base[p.id])}</span></button>
-        ${delFor === p.id
+        ${S.multi ? `<span class="check" style="--c:${p.color}" aria-hidden="true">${S.sel.includes(p.id) ? '✓' : ''}</span>`
+        : delFor === p.id
           ? `<button class="edit del" data-act="del-person" data-p="${p.id}" aria-label="Remove ${esc(p.name)}">${TRASH}</button>`
           : `<button class="edit" data-act="edit-person" data-p="${p.id}" aria-label="Rename ${esc(p.name)}">${PENCIL}</button>`}
       </div>`).join('')}
-      ${S.people.length > 1 ? `<button role="tab" aria-selected="${all}" data-act="sel" data-p="all">
-        <span class="dot every">All</span><span class="rname">Everyone</span><span class="rtot">shared</span></button>` : ''}
+      ${S.multi ? `<button role="tab" aria-selected="${all}" data-act="sel" data-p="all">
+        <span class="dot every">All</span><span class="rname">Everyone</span><span class="rtot">select all</span></button>` : ''}
       <button class="adder" aria-expanded="${open}" data-act="add-person">
         <span class="dot every">+</span><span class="rname">Add</span><span class="rtot">person</span></button>
     </div>
@@ -222,7 +227,7 @@ function assignView() {
       : me ? `Tap everything ${esc(me.name)} had.`
       : group.length <= 3 ? `Tap what ${esc(group.slice(0, -1).map((p) => p.name).join(', '))} and ${esc(group[group.length - 1].name)} shared.`
       : `Tap what these ${group.length} shared.`}
-      ${S.people.length > 1 ? `<button class="link" data-act="multi" aria-pressed="${S.multi}">${S.multi ? 'Pick one person' : 'Pick several'}</button>` : ''}</p>
+</p>
     ${untouched ? `<div class="banner calm"><span class="grow">Mostly shared by the whole table?</span>
       <button class="link" data-act="all-equal">Split everything equally</button></div>` : ''}
     ${left && left < S.items.length ? `<div class="banner"><span class="grow">${left} item${left > 1 ? 's' : ''} not finished yet.</span>
@@ -614,8 +619,8 @@ document.addEventListener('click', async (e) => {
       });
       toast('Everything is shared equally. Now tap what only some people had.');
       break;
-    case 'multi':
-      S.multi = !S.multi;
+    case 'mode':                              // One person ↔ Together; leaving Together keeps the first picked
+      S.multi = el.dataset.m === 'multi'; delFor = null; adding = false;
       if (!S.multi) S.sel = S.sel.slice(0, 1);
       break;
     case 'whole': {                           // share the whole item equally, by price, between whoever is on it
