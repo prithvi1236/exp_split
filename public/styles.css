@@ -343,3 +343,6 @@ details[open] .chev { transform: rotate(90deg); }
 .card.none b { color: var(--text); }
 .banner.two { flex-wrap: wrap; row-gap: 0; column-gap: 18px; }
 .banner.two .grow { flex-basis: 100%; }
+
+/* Someone with nothing picked yet: a dashed ring, so the host can see who is left */
+.rail .none:not([aria-selected="true"]) .dot { outline: 2px dashed var(--c); outline-offset: 2px; }

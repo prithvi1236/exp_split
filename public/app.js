@@ -105,6 +105,8 @@ const pieces = (it) => C.pieces(S, it);
 const unassigned = () => S.items.filter((i) => !C.finished(S, i));
 const compute = () => C.compute(S);
 /* The rail selection: one person, or several picked together (`S.multi`). */
+/* Has this person been put on anything yet? A table split nobody chose (`auto`) does not count. */
+const hasPicks = (id) => S.items.some((it) => !it.auto && pieces(it).some((pc) => pc.shares[id] > 0));
 const pickedAll = () => S.people.length > 1 && S.sel.length === S.people.length;
 const hasPicked = (shares) => S.sel.length > 0 && S.sel.every((id) => shares[id] > 0);
 const isEveryone = (shares) => C.isEveryone(S, shares);
@@ -231,6 +233,7 @@ function assignView() {
           autocomplete="off" autocapitalize="words" enterkeyhint="go" maxlength="24">
         <button class="btn primary" type="submit">Join</button>
       </form></div>`;
+  const marks = S.people.length > 1 && S.items.length > 0 && !S.locked;   // ring the people with nothing picked yet
   const recents = loadNames().filter((n) => !S.people.some((x) => x.name.toLowerCase() === n.toLowerCase()));
 
   // Which items to show. The host starts on what is left, since that is what blocks the next step.
@@ -264,7 +267,8 @@ function assignView() {
     </div>` : ''}
     <div class="rail ${S.multi ? 'multi' : ''}" role="tablist" aria-label="Who are you picking for?" ${S.multi ? 'aria-multiselectable="true"' : ''}>
       ${S.people.map((p) => `<div class="tile">
-        <button role="tab" aria-selected="${S.sel.includes(p.id)}" ${isHost || S.multi ? `data-act="sel" data-p="${p.id}"` : 'tabindex="-1"'} style="--c:${p.color}">
+        <button role="tab" aria-selected="${S.sel.includes(p.id)}" ${isHost || S.multi ? `data-act="sel" data-p="${p.id}"` : 'tabindex="-1"'} style="--c:${p.color}"
+          ${marks && !hasPicks(p.id) ? `class="none" aria-description="Nothing picked yet"` : ''}>
           ${av(p)}<span class="rname">${esc(p.name)}</span><span class="rtot">${R && st.ok.has(p.id) ? '✓ ' : ''}${fmt(base[p.id])}</span></button>
         ${S.multi ? `<span class="check" style="--c:${p.color}" aria-hidden="true">${S.sel.includes(p.id) ? '✓' : ''}</span>`
         : !isHost ? '' : delFor === p.id
@@ -371,8 +375,11 @@ function assignView() {
 function nextPerson() {
   if (!host() || S.step !== 1 || !unassigned().length) return null;
   if (S.multi || S.sel.length !== 1) return null;       // walking person by person only makes sense with one picked
+  // The next person, in rail order, who has nothing picked yet; past the end it wraps round to the start.
   const i = S.people.findIndex((p) => p.id === S.sel[0]);
-  return i >= 0 && i < S.people.length - 1 ? S.people[i + 1] : null;
+  if (i < 0) return null;
+  const order = [...S.people.slice(i + 1), ...S.people.slice(0, i)];
+  return order.find((p) => !hasPicks(p.id)) || null;
 }
 
 function resultView() {
