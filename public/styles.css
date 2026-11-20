@@ -346,3 +346,21 @@ details[open] .chev { transform: rotate(90deg); }
 
 /* Someone with nothing picked yet: a dashed ring, so the host can see who is left */
 .rail .none:not([aria-selected="true"]) .dot { outline: 2px dashed var(--c); outline-offset: 2px; }
+
+/* Item search: a button on the filter row, then a field pinned under the rail */
+.seg .sbtn { flex: 0 0 40px; display: grid; place-items: center; padding: 0; }
+.find {
+  position: sticky; top: calc(var(--rail-h, 0px) - 4px); z-index: 4;
+  display: flex; align-items: center; gap: 8px; margin: -6px -16px 4px; padding: 6px 16px 10px; background: var(--bg);
+}
+.find > svg { position: absolute; left: 28px; color: var(--muted); pointer-events: none; }
+.find input {
+  flex: 1; min-width: 0; height: 40px; padding: 0 12px 0 36px; border-radius: 12px; font-size: 16px;
+  border: 1.5px solid var(--line); background: var(--card); color: var(--text);
+}
+.find input:focus { outline: none; border-color: var(--accent); }
+.find input::-webkit-search-cancel-button { display: none; }
+.find .x { flex: none; width: 40px; height: 40px; font-size: 22px; color: var(--muted); }
+.item[hidden] { display: none; }
+.card.found > .item { border-top: 0; }
+.card.found > .item:not([hidden]) ~ .item:not([hidden]) { border-top: 1px solid var(--line); }

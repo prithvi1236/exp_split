@@ -20,6 +20,9 @@ const openIds = new Set();        // quantity items whose units are unfolded on 
    filter or the picked people change, so a row never vanishes under a finger. */
 let filter = null, showDone = false, keepKey = '';
 const keep = new Set();
+/* Item search, on this phone only. It is offered once the bill's items no longer fit on one screen,
+   and stays offered for that bill (`searchable`) so the button does not come and go. */
+let searching = false, query = '', searchable = false;
 
 /* ---------- state ---------- */
 function guessCur() {
@@ -196,6 +199,28 @@ function billView() {
     </div>`;
 }
 
+const SEARCH = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>';
+/* Does an item's name match what was typed? Case and accents are ignored. Each typed word must
+   appear in the name, or its letters in order within one word of it starting with the same letter,
+   so "nan" finds "Butter Naan" and "pnr" finds "Paneer Tikka". */
+const plain = (t) => t.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
+function found(name, q) {
+  const n = plain(name), words = n.split(/[\s\-\/,.()&+]+/).filter(Boolean);
+  const inOrder = (t, w) => { let i = 0; for (const c of w) if (c === t[i]) i++; return i === t.length; };
+  return plain(q).split(/\s+/).filter(Boolean).every((t) => n.includes(t) || words.some((w) => w[0] === t[0] && inOrder(t, w)));
+}
+/* Typing narrows the list in place: redrawing would close the phone's keyboard. */
+function applySearch() {
+  let n = 0;
+  view.querySelectorAll('[data-item]').forEach((el) => {
+    const it = S.items.find((i) => i.id === el.dataset.item), ok = !!it && found(it.name, query);
+    el.hidden = !ok; n += ok;
+  });
+  const none = $('#noMatch');
+  if (none) { none.hidden = n > 0 || !query.trim(); none.querySelector('span').textContent = query.trim(); }
+}
+function closeSearch() { searching = false; query = ''; }
+
 const PENCIL = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>';
 const TRASH = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/></svg>';
 const av = (p, cls = '') => `<span class="dot ${cls}" style="--c:${p.color}">${esc(p.name[0].toUpperCase())}</span>`;
@@ -244,19 +269,30 @@ function assignView() {
   const picked = (it) => !it.auto && pieces(it).some((pc) => S.sel.some((id) => pc.shares[id] > 0));
   const mineN = S.items.filter(picked).length;
   const mineLabel = !one ? 'Picked' : one.id === self?.id ? 'Yours' : `${esc(one.name)}'s`;
-  const filterBar = S.items.length > 1 && S.sel.length ? `<div class="seg filter" role="group" aria-label="Show items">
+  const findBar = `<form class="find" id="findForm" role="search">
+      ${SEARCH}<input id="iSearch" type="search" placeholder="Find an item" aria-label="Find an item" value="${esc(query)}"
+        autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search">
+      <button type="button" class="x" data-act="search-close" aria-label="Close search">×</button></form>`;
+  const filterBar = searching && S.items.length ? findBar
+    : S.items.length > 1 && S.sel.length ? `<div class="seg filter" role="group" aria-label="Show items">
       <button data-act="filter" data-f="left" aria-pressed="${f === 'left'}">Left <b>${todo.size}</b></button>
       <button data-act="filter" data-f="mine" aria-pressed="${f === 'mine'}"><span class="fname">${mineLabel}</span> <b>${mineN}</b></button>
       <button data-act="filter" data-f="all" aria-pressed="${f === 'all'}">All <b>${S.items.length}</b></button>
+      ${searchable ? `<button class="sbtn" data-act="search-open" aria-label="Find an item">${SEARCH}</button>` : ''}
     </div>` : '';
   const stay = (it) => keep.has(it.id);
   // In All, while anything is left, finished items fold away below the ones still needing someone.
-  const fold0 = f === 'all' && todo.size > 0;
-  const shown = S.items.filter((it) => stay(it) || (f === 'left' ? todo.has(it.id) : f === 'mine' ? picked(it) : !fold0 || todo.has(it.id)));
+  const fold0 = !searching && f === 'all' && todo.size > 0;
+  const shown = searching ? S.items : S.items.filter((it) => stay(it) || (f === 'left' ? todo.has(it.id) : f === 'mine' ? picked(it) : !fold0 || todo.has(it.id)));
   const folded = fold0 ? S.items.filter((it) => !shown.includes(it)) : [];
   const fold = folded.length ? `<button class="fold" data-act="show-done" aria-expanded="${showDone}">
       <span class="grow">✓ ${folded.length} item${folded.length > 1 ? 's' : ''} already assigned</span><span class="link">${showDone ? 'Hide' : 'Show'}</span></button>` : '';
-  const empty = shown.length || !S.items.length || !S.sel.length ? ''
+  const hid = (it) => (searching && !found(it.name, query) ? 'hidden' : '');
+  const misses = searching && query.trim() && !S.items.some((it) => found(it.name, query));
+  const empty = searching ? `<div class="card pad none" id="noMatch" ${misses ? '' : 'hidden'}>
+        <b>No items match “<span>${esc(query.trim())}</span>”</b>
+        <button class="link" data-act="search-clear">Clear search</button></div>`
+    : shown.length || !S.items.length || !S.sel.length ? ''
     : f === 'left' ? `<div class="card pad none"><b>Every item has someone ✓</b>
         <button class="link" data-act="filter" data-f="all">Show all items</button></div>`
     : `<div class="card pad none">Nothing picked for ${one ? esc(one.name) : 'them'} yet.
@@ -302,7 +338,7 @@ function assignView() {
     ${!isHost && self && todo.size && f !== 'left' ? `<div class="banner calm"><span class="grow">${todo.size} item${todo.size > 1 ? 's' : ''} nobody has picked yet.</span>
       <button class="link" data-act="show-left">Show them</button></div>` : ''}
     ${filterBar}
-    ${shown.length ? `<div class="card">${shown.map(itemHtml).join('')}</div>` : ''}
+    ${shown.length ? `<div class="card ${searching ? 'found' : ''}">${shown.map(itemHtml).join('')}</div>` : ''}
     ${empty}
     ${fold}
     ${showDone && folded.length ? `<div class="card">${folded.map(itemHtml).join('')}</div>` : ''}
@@ -336,7 +372,7 @@ function assignView() {
         const tip = it.auto ? (isHost ? 'Shared by everyone · tap to give it to the picked people only' : 'Shared by everyone · tap if only some of you had it') : show && free < it.qty ? 'Tap a filled slot to share it' : '';
         const asOne = isHost ? `<button class="link" data-act="whole" data-id="${it.id}">Share as one</button>` : '';
         const hints = [tip, asOne, toggle].filter(Boolean).join(' · ');
-        return `<div class="item ${on ? 'on' : ''}" data-item="${it.id}" style="--c:${tint}">
+        return `<div class="item ${on ? 'on' : ''}" data-item="${it.id}" ${hid(it)} style="--c:${tint}">
           ${row({ name: esc(it.name), amt: total, on, tick: all ? '✓' : String(mine), warn: free > 0,
             sub: `${it.qty} ordered · ${free ? `${free} left` : 'all taken'}`, badges: show ? '' : summary })}
           ${show ? `<div class="slots">${units.map((sh, k) => {
@@ -363,7 +399,7 @@ function assignView() {
             <span class="amt uamt">${fmt(parts[k])}</span></div>`).join('')}
           <p class="hint flat">Numbers are shares. · <button class="link" data-act="uneven" data-id="${it.id}">Split equally</button></p></div>`;
       }
-      return `<div class="item ${on ? 'on' : ''}" data-item="${it.id}" style="--c:${tint}">
+      return `<div class="item ${on ? 'on' : ''}" data-item="${it.id}" ${hid(it)} style="--c:${tint}">
         ${row({ name: esc(it.name), amt: total, on, warn: !who.length,
           sub: !who.length ? `${sub ? sub + ' · ' : ''}Nobody yet` : it.auto ? `Everyone · ${sub}` : sub,
           badges: it.auto ? '<span class="cnt grp">All</span>' : who.map((p) => av(p, 'sm')).join('') })}${
@@ -490,7 +526,7 @@ function render() {
   $('#steps').innerHTML = (isHost ? STEPS : [null, 'Pick yours', 'Your share']).map((s, i) => s &&
     `<button class="${i === S.step ? 'now' : i < S.step ? 'done' : ''}" data-act="step" data-step="${i}" ${S.locked || (i > S.step && blocker(i)) ? 'disabled' : ''}>${i + 1 - first}. ${s}</button>`).filter(Boolean).join('');
   // Whatever is being typed, and whichever cards are open, survive the redraw.
-  const typed = ['pName', 'jName', 'meName'].map((id) => { const el = document.getElementById(id); return el && { id, v: el.value, focus: document.activeElement === el }; }).filter(Boolean);
+  const typed = ['pName', 'jName', 'meName', 'iSearch'].map((id) => { const el = document.getElementById(id); return el && { id, v: el.value, focus: document.activeElement === el }; }).filter(Boolean);
   const openCards = [...view.querySelectorAll('details[open]')].map((d) => d.dataset.p);
   const railX = $('.rail')?.scrollLeft;
   view.innerHTML = (isHost ? [billView, assignView, resultView] : [null, assignView, myView])[S.step]();
@@ -507,6 +543,13 @@ function render() {
   }
   typed.forEach(({ id, v, focus }) => { const el = document.getElementById(id); if (el && (v || focus)) { el.value = v; if (focus) el.focus(); } });
   view.querySelectorAll('details[data-p]').forEach((d) => { d.open = openCards.includes(d.dataset.p); });
+  if (rail) view.style.setProperty('--rail-h', `${rail.offsetHeight}px`);   // the open search pins just under the rail
+  if (!S.items.length) { searchable = false; closeSearch(); }
+  else if (!searchable && S.step === 1) {
+    const rows = [...view.querySelectorAll('[data-item]:not([hidden])')];
+    const avg = rows.length ? rows.reduce((a, el) => a + el.offsetHeight, 0) / rows.length : 0;
+    if (avg * S.items.length > view.clientHeight - (rail?.offsetHeight || 0)) { searchable = true; render(); return; }
+  }
   $('#scanStrip').hidden = !scanning;
   scanTick();
   backBtn.hidden = S.step === first || S.locked;
@@ -551,7 +594,7 @@ function adopt(d) {
 }
 /* Redraw for a change that came from someone else, but never under a finger or a keyboard. */
 function softRender() {
-  if (pressing || sheet.open || personSheet.open || meSheet.open || ['total', 'cur'].includes(document.activeElement?.id)) { stale = true; return; }
+  if (pressing || sheet.open || personSheet.open || meSheet.open || ['total', 'cur', 'iSearch'].includes(document.activeElement?.id)) { stale = true; return; }
   stale = false;
   render();
 }
@@ -881,6 +924,12 @@ document.addEventListener('click', async (e) => {
       return;
     case 'rest-all': act({ t: 'rest-all' }); break;
     case 'filter': filter = el.dataset.f; break;
+    case 'search-open':
+      searching = true; render();
+      $('#iSearch')?.focus();
+      return;
+    case 'search-close': closeSearch(); break;
+    case 'search-clear': query = ''; $('#iSearch').value = ''; applySearch(); $('#iSearch').focus(); return;
     case 'show-done': showDone = !showDone; break;
     case 'show-left': showLeft(); return;
     case 'toggle-slots': if (!openIds.delete(id)) openIds.add(id); break;
@@ -1070,6 +1119,7 @@ document.addEventListener('submit', (e) => {
     render();
     return;
   }
+  if (e.target.id === 'findForm') { e.preventDefault(); $('#iSearch')?.blur(); return; }
   if (e.target.id === 'joinForm') {
     e.preventDefault();
     join($('#jName').value);
@@ -1082,6 +1132,11 @@ document.addEventListener('submit', (e) => {
   $('#pName').value = '';
   render();
   $('#pName').focus();
+});
+
+document.addEventListener('input', (e) => { if (e.target.id === 'iSearch') { query = e.target.value; applySearch(); } });
+document.addEventListener('keydown', (e) => {
+  if (e.target.id === 'iSearch' && e.key === 'Escape') { closeSearch(); render(); }
 });
 
 document.addEventListener('change', (e) => {
