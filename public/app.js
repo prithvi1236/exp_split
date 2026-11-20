@@ -15,6 +15,11 @@ let editingId = null, editingPerson = null;
 let delFor = null;               // person whose tile badge is showing delete instead of rename
 let adding = false;               // the add-person panel on the Split step is open
 const openIds = new Set();        // quantity items whose units are unfolded on this phone
+/* Which items the Split list shows on this phone: 'left' (nobody yet), 'mine' (the picked people's),
+   'all', or null to choose for itself. Items tapped while filtered stay put (`keep`) until the
+   filter or the picked people change, so a row never vanishes under a finger. */
+let filter = null, showDone = false, keepKey = '';
+const keep = new Set();
 
 /* ---------- state ---------- */
 function guessCur() {
@@ -209,7 +214,7 @@ function assignView() {
   const all = pickedAll(), one = group.length === 1 ? group[0] : null;
   const untouched = isHost && S.people.length > 1 && S.items.length > 0 && S.items.every((i) => pieces(i).every((pc) => !sharersOf(pc.shares).length));
   const open = isHost && (adding || S.people.length < 2);
-  const left = isHost ? unassigned().length : 0;
+  const left = isHost ? unassigned().length : 0;      // only the host may split what is left between everyone
   const st = status(), base = Object.fromEntries(st.r.per.map((r) => [r.p.id, r.base]));
   const saved = myName();
   const top = !isHost ? ''
@@ -227,6 +232,32 @@ function assignView() {
         <button class="btn primary" type="submit">Join</button>
       </form></div>`;
   const recents = loadNames().filter((n) => !S.people.some((x) => x.name.toLowerCase() === n.toLowerCase()));
+
+  // Which items to show. The host starts on what is left, since that is what blocks the next step.
+  const todo = new Set(unassigned().map((i) => i.id));
+  const f = filter || (isHost && todo.size ? 'left' : 'all');
+  const key = [f, S.multi, ...S.sel].join();
+  if (key !== keepKey) { keep.clear(); keepKey = key; }
+  const picked = (it) => !it.auto && pieces(it).some((pc) => S.sel.some((id) => pc.shares[id] > 0));
+  const mineN = S.items.filter(picked).length;
+  const mineLabel = !one ? 'Picked' : one.id === self?.id ? 'Yours' : `${esc(one.name)}'s`;
+  const filterBar = S.items.length > 1 && S.sel.length ? `<div class="seg filter" role="group" aria-label="Show items">
+      <button data-act="filter" data-f="left" aria-pressed="${f === 'left'}">Left <b>${todo.size}</b></button>
+      <button data-act="filter" data-f="mine" aria-pressed="${f === 'mine'}"><span class="fname">${mineLabel}</span> <b>${mineN}</b></button>
+      <button data-act="filter" data-f="all" aria-pressed="${f === 'all'}">All <b>${S.items.length}</b></button>
+    </div>` : '';
+  const stay = (it) => keep.has(it.id);
+  // In All, while anything is left, finished items fold away below the ones still needing someone.
+  const fold0 = f === 'all' && todo.size > 0;
+  const shown = S.items.filter((it) => stay(it) || (f === 'left' ? todo.has(it.id) : f === 'mine' ? picked(it) : !fold0 || todo.has(it.id)));
+  const folded = fold0 ? S.items.filter((it) => !shown.includes(it)) : [];
+  const fold = folded.length ? `<button class="fold" data-act="show-done" aria-expanded="${showDone}">
+      <span class="grow">✓ ${folded.length} item${folded.length > 1 ? 's' : ''} already assigned</span><span class="link">${showDone ? 'Hide' : 'Show'}</span></button>` : '';
+  const empty = shown.length || !S.items.length || !S.sel.length ? ''
+    : f === 'left' ? `<div class="card pad none"><b>Every item has someone ✓</b>
+        <button class="link" data-act="filter" data-f="all">Show all items</button></div>`
+    : `<div class="card pad none">Nothing picked for ${one ? esc(one.name) : 'them'} yet.
+        <button class="link" data-act="filter" data-f="${todo.size ? 'left' : 'all'}">${todo.size ? "Show what's left" : 'Show all items'}</button></div>`;
   return `${top}${joinCard}${(isHost || self) && S.people.length > 1 ? `<div class="seg" role="group" aria-label="Pick for">
       <button data-act="mode" data-m="one" aria-pressed="${!S.multi}">${isHost ? 'One person' : 'Self'}</button>
       <button data-act="mode" data-m="multi" aria-pressed="${S.multi}">Together</button>
@@ -261,9 +292,19 @@ function assignView() {
 </p>
     ${untouched ? `<div class="banner calm"><span class="grow">Mostly shared by the whole table?</span>
       <button class="link" data-act="all-equal">Split everything equally</button></div>` : ''}
-    ${left && left < S.items.length ? `<div class="banner"><span class="grow">${left} item${left > 1 ? 's' : ''} not finished yet.</span>
+    ${left && left < S.items.length ? `<div class="banner ${f === 'left' ? '' : 'two'}"><span class="grow">${left} item${left > 1 ? 's' : ''} not finished yet.</span>
+      ${f === 'left' ? '' : '<button class="link" data-act="show-left">Show them</button>'}
       <button class="link" data-act="rest-all">Split between everyone</button></div>` : ''}
-    ${S.items.length ? `<div class="card">${S.items.map((it) => {
+    ${!isHost && self && todo.size && f !== 'left' ? `<div class="banner calm"><span class="grow">${todo.size} item${todo.size > 1 ? 's' : ''} nobody has picked yet.</span>
+      <button class="link" data-act="show-left">Show them</button></div>` : ''}
+    ${filterBar}
+    ${shown.length ? `<div class="card">${shown.map(itemHtml).join('')}</div>` : ''}
+    ${empty}
+    ${fold}
+    ${showDone && folded.length ? `<div class="card">${folded.map(itemHtml).join('')}</div>` : ''}
+    ${liveItems()}`;
+
+  function itemHtml(it) {
       const who = sharers(it), total = cents(it.total);
       const tint = one ? one.color : group.length ? 'var(--accent)' : 'var(--line)';
       const each = (amt, n) => { const e = allocate(amt, Array(n).fill(1)); return `${e[0] !== e[n - 1] ? 'about ' : ''}${fmt(e[n - 1])} each`; };
@@ -291,7 +332,7 @@ function assignView() {
         const tip = it.auto ? (isHost ? 'Shared by everyone · tap to give it to the picked people only' : 'Shared by everyone · tap if only some of you had it') : show && free < it.qty ? 'Tap a filled slot to share it' : '';
         const asOne = isHost ? `<button class="link" data-act="whole" data-id="${it.id}">Share as one</button>` : '';
         const hints = [tip, asOne, toggle].filter(Boolean).join(' · ');
-        return `<div class="item ${on ? 'on' : ''}" style="--c:${tint}">
+        return `<div class="item ${on ? 'on' : ''}" data-item="${it.id}" style="--c:${tint}">
           ${row({ name: esc(it.name), amt: total, on, tick: all ? '✓' : String(mine), warn: free > 0,
             sub: `${it.qty} ordered · ${free ? `${free} left` : 'all taken'}`, badges: show ? '' : summary })}
           ${show ? `<div class="slots">${units.map((sh, k) => {
@@ -318,13 +359,12 @@ function assignView() {
             <span class="amt uamt">${fmt(parts[k])}</span></div>`).join('')}
           <p class="hint flat">Numbers are shares. · <button class="link" data-act="uneven" data-id="${it.id}">Split equally</button></p></div>`;
       }
-      return `<div class="item ${on ? 'on' : ''}" style="--c:${tint}">
+      return `<div class="item ${on ? 'on' : ''}" data-item="${it.id}" style="--c:${tint}">
         ${row({ name: esc(it.name), amt: total, on, warn: !who.length,
           sub: !who.length ? `${sub ? sub + ' · ' : ''}Nobody yet` : it.auto ? `Everyone · ${sub}` : sub,
           badges: it.auto ? '<span class="cnt grp">All</span>' : who.map((p) => av(p, 'sm')).join('') })}${
           it.auto ? `<p class="hint">${isHost ? 'Tap to give it to the picked people only' : 'Tap if only some of you had it'}</p>` : extra}</div>`;
-    }).join('')}</div>` : ''}
-    ${liveItems()}`;
+  }
 }
 
 /* While items are still unpicked, the main button walks through the people in order. */
@@ -466,12 +506,13 @@ function render() {
   $('#reset').hidden = !R && !S.items.length && !S.people.some((p) => p.id !== S.me) && !scanning;   // nothing to clear yet
   const block = S.step < 2 ? blocker(S.step + 1) : '';
   const np = nextPerson();
-  let label, off = !!block && !np;
+  let label, off = !!block && !np && !jumpable();
   if (S.step === 2) {
     const st = R && !S.locked && !isHost ? status() : null, x = st?.r.per.find((row) => row.p.id === R.me);
     off = !!x && st.ok.has(x.p.id);
     label = !R || S.locked ? 'Share the split' : isHost ? 'Finalize the split' : off ? 'Confirmed ✓' : `Confirm ${fmt(x.total)}`;
   } else if (np) label = `Next: ${np.name}`;
+  else if (jumpable()) { const n = unassigned().length; label = n > 1 ? `Show the ${n} items left` : 'Show the item left'; }
   else if (block && (S.step > 0 || S.items.length || scanning)) label = block;
   else label = isHost ? ['Next: who had what?', 'See the split'][S.step] : 'Review my share';
   nextBtn.disabled = off;
@@ -832,6 +873,9 @@ document.addEventListener('click', async (e) => {
       if (adding) $('#pName')?.focus();
       return;
     case 'rest-all': act({ t: 'rest-all' }); break;
+    case 'filter': filter = el.dataset.f; break;
+    case 'show-done': showDone = !showDone; break;
+    case 'show-left': showLeft(); return;
     case 'toggle-slots': if (!openIds.delete(id)) openIds.add(id); break;
     case 'all-equal':
       act({ t: 'all-equal' });
@@ -854,6 +898,7 @@ document.addEventListener('click', async (e) => {
     case 'back': go(S.step - 1); return;
     case 'next':
       if (nextPerson()) { S.sel = [nextPerson().id]; view.scrollTop = 0; break; }
+      if (jumpable()) { showLeft(); return; }
       if (S.step < 2) return go(S.step + 1);
       if (!R || S.locked) { shareOut(shareText()); return; }
       if (host()) {                           // finalize: from here nobody can change the split
@@ -888,6 +933,7 @@ document.addEventListener('click', async (e) => {
     case 'pick': {
       adding = false;
       if (!it || !S.sel.length) return;
+      keep.add(id);                           // it stays on screen even if it no longer matches the filter
       // The op says what this tap means given what was on screen: put the picked people on, or take them off.
       const all = host() && pickedAll(), units = slots(it), k = units && el.dataset.k != null ? Number(el.dataset.k) : null;
       const sh = units ? (k != null ? units[k] : null) : it.shares;
@@ -916,6 +962,16 @@ document.addEventListener('click', async (e) => {
   }
   render();
 });
+
+/* Blocked only by unfinished items: the main button and the banner take the host straight to them. */
+const jumpable = () => host() && !S.locked && S.step === 1 && !scanning && S.people.length >= 2 && unassigned().length > 0;
+function showLeft() {
+  filter = 'left';
+  render();
+  const first = view.querySelector('[data-item]');
+  // Centred, so the sticky rail does not cover it.
+  if (first) first.scrollIntoView({ block: 'center', behavior: 'smooth' });
+}
 
 function confirmShare(pid) {
   const r = compute(), x = r.per.find((row) => row.p.id === pid);

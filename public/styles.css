@@ -325,3 +325,21 @@ details[open] .chev { transform: rotate(90deg); }
 .join .addrow input { background: var(--bg); }
 .card > .lines:first-child { border-top: 0; }
 .rail [role="tab"][tabindex="-1"] { cursor: default; }
+
+/* Left / Yours / All above the Split list */
+.seg.filter { margin: 0 0 10px; }
+.seg.filter button { display: flex; align-items: center; justify-content: center; gap: 5px; min-width: 0; font-size: 13px; }
+.seg.filter b {
+  min-width: 20px; padding: 1px 6px; border-radius: 999px; font-size: 12px;
+  background: color-mix(in srgb, var(--muted) 18%, transparent); font-variant-numeric: tabular-nums;
+}
+.seg.filter .fname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fold {
+  display: flex; align-items: center; gap: 10px; width: 100%; padding: 12px 14px; margin-bottom: 10px;
+  border: 1px dashed var(--line); border-radius: var(--radius); font-size: 14px; color: var(--muted); text-align: left;
+}
+.fold .link { padding: 0; }
+.card.none { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; font-size: 14px; color: var(--muted); }
+.card.none b { color: var(--text); }
+.banner.two { flex-wrap: wrap; row-gap: 0; column-gap: 18px; }
+.banner.two .grow { flex-basis: 100%; }
