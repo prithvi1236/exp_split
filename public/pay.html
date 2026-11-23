@@ -13,7 +13,7 @@
   </style>
 </head>
 <body>
-  <!-- Opened from a "Pay by UPI" link in a chat: chat apps don't let upi:// links be tapped, a web page can. -->
+  <!-- Opened from a "Pay via UPI" link in a chat: chat apps don't let upi:// links be tapped, a web page can. -->
   <main id="view"><p class="lead">This payment link is incomplete.</p></main>
   <script type="module">
     import * as UPI from './upi.js';
@@ -23,11 +23,10 @@
     const fmt = (n) => '₹' + (n / 100).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     if (UPI.VPA.test(pa)) {
       const to = { pa, pn }, note = (q.get('tn') || '').slice(0, 50) || undefined;
-      const apps = UPI.isIOS() ? `<div class="apps">${UPI.APPS.map(([n, base]) => `<a class="chip" href="${esc(UPI.link(to, c, base, note))}">${n}</a>`).join('')}</div>` : '';
       document.getElementById('view').innerHTML = `
         <div class="grand"><div class="muted small">${c ? 'Your share' : 'Pay'}</div>${c ? `<div class="big">${fmt(c)}</div>` : ''}
           <div class="to">to ${esc(pn)}</div></div>
-        <div class="pay"><a class="btn primary block" href="${esc(UPI.link(to, c, undefined, note))}">Open UPI app</a>${apps}
+        <div class="pay"><a class="btn primary block" href="${esc(UPI.link(to, c, undefined, note))}">Open UPI app</a>${UPI.appButtons(to, c, note)}
           <p class="muted small">${esc(pa)} · <button class="link" id="copy">Copy UPI ID</button></p></div>`;
       document.getElementById('copy').onclick = async (e) => {
         try { await navigator.clipboard.writeText(pa); e.target.textContent = 'Copied'; } catch { e.target.textContent = pa; }

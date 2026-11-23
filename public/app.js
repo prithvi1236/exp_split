@@ -134,8 +134,7 @@ function carryUpi() {
 function payBox(c) {
   const to = payee();
   if (!to || c <= 0) return '';
-  const apps = UPI.isIOS() ? `<div class="apps">${UPI.APPS.map(([n, base]) => `<a class="chip" href="${esc(UPI.link(to, c, base))}">${n}</a>`).join('')}</div>` : '';
-  return `<div class="pay"><a class="btn primary block" href="${esc(UPI.link(to, c))}">Pay ${esc(to.pn)} ${fmt(c)} by UPI</a>${apps}
+  return `<div class="pay"><a class="btn primary block" href="${esc(UPI.link(to, c))}">Pay ${esc(to.pn)} ${fmt(c)} via UPI</a>${UPI.appButtons(to, c)}
     <p class="muted small">To ${esc(to.pa)} · <button class="link" data-act="copy-upi">Copy UPI ID</button></p></div>`;
 }
 /* `need` is who has a share to agree to: everyone but the host, since finalizing is how the host
@@ -543,8 +542,8 @@ function resultView() {
     ? `<div class="banner calm"><span class="grow"><b>Final.</b> Nobody can change the split now.</span><button class="link" data-act="unlock">Reopen</button></div>`
     : `<p class="lead">${done} of ${need.length} confirmed${offline ? ' · reconnecting…' : ''}. Finalize when you are happy with it.</p>`;
   const upi = S.cur !== '₹' ? '' : S.upi
-    ? `<div class="banner calm"><span class="grow">Everyone pays you back by UPI to <b>${esc(S.upi.pa)}</b></span><button class="link" data-act="edit-upi">Change</button></div>`
-    : `<button class="row add upi-add" data-act="edit-upi">Get paid back by UPI: add your UPI ID</button>`;
+    ? `<div class="banner calm"><span class="grow">Everyone pays you back via UPI to <b>${esc(S.upi.pa)}</b></span><button class="link" data-act="edit-upi">Change</button></div>`
+    : `<button class="row add upi-add" data-act="edit-upi">Get paid back via UPI: add your UPI ID</button>`;
   return `${room}<div class="grand"><div class="muted small">Bill total</div><div class="big">${fmt(r.total)}</div>
       <div class="check">✓ Shares add up to ${fmt(r.per.reduce((a, x) => a + x.total, 0))}</div></div>
     ${upi}
@@ -574,7 +573,7 @@ function myView() {
       ${x.lines.map((l) => `<div><span>${esc(l.name)}${l.frac ? ` <span class="muted">(${l.frac})</span>` : ''}</span><span>${fmt(l.amt)}</span></div>`).join('') || '<div class="muted">Nothing</div>'}
       ${x.extra ? `<div class="muted"><span>${x.extra > 0 ? 'Tax / tip share' : 'Discount share'}</span><span>${fmt(x.extra)}</span></div>` : ''}
     </div></div>
-    ${S.locked || ok.has(x.p.id) ? payBox(x.total) : payee() && x.total > 0 ? `<p class="muted small center">Once you confirm, you can pay ${esc(payee().pn)} by UPI from here.</p>` : ''}`
+    ${S.locked || ok.has(x.p.id) ? payBox(x.total) : payee() && x.total > 0 ? `<p class="muted small center">Once you confirm, you can pay ${esc(payee().pn)} via UPI from here.</p>` : ''}`
     : `<div class="grand"><div class="muted small">Bill total</div><div class="big">${fmt(r.total)}</div><div class="check">Final ✓</div></div>`}
     ${left.length ? `<div class="banner"><span class="grow">Nobody has picked ${esc(names)} yet.</span><button class="link" data-act="back">Is it yours?</button></div>` : ''}
     <div class="card">${r.per.map(({ p, total }) => `<div class="row">${av(p)}
@@ -588,7 +587,7 @@ function personText(id) {
   return [`${x.p.name}, your share of the bill is ${fmt(x.total)}`, '',
     ...x.lines.map((l) => `${l.name}${l.frac ? ` (${l.frac})` : ''}: ${fmt(l.amt)}`),
     ...(x.extra ? [`${x.extra > 0 ? 'Tax / tip share' : 'Discount share'}: ${fmt(x.extra)}`] : []),
-    ...(payee() && id !== hostId() && x.total > 0 ? ['', `Pay ${payee().pn} by UPI: ${UPI.pageLink(payee(), x.total)}`] : []),
+    ...(payee() && id !== hostId() && x.total > 0 ? ['', `Pay ${payee().pn} via UPI: ${UPI.pageLink(payee(), x.total)}`] : []),
   ].join('\n');
 }
 
@@ -629,7 +628,7 @@ function shareText() {
   return ['Bill split — total ' + fmt(r.total), '',
     ...r.per.map((x) => `${x.p.name}: ${fmt(x.total)}`), '',
     ...r.per.map((x) => `${x.p.name} — ${x.lines.map((l) => l.name + (l.frac ? ` (${l.frac})` : '')).join(', ') || 'nothing'}`),
-    ...(payee() ? ['', `Pay ${payee().pn} by UPI: ${payee().pa}`] : []),
+    ...(payee() ? ['', `Pay ${payee().pn} via UPI: ${payee().pa}`] : []),
   ].join('\n');
 }
 

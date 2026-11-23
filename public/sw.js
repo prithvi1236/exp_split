@@ -1,5 +1,5 @@
-const CACHE = 'splitbill-v26';
-const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'core.js', 'upi.js', 'pay.html', 'ocr.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
+const CACHE = 'splitbill-v27';
+const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'core.js', 'upi.js', 'pay.html', 'ocr.js', 'manifest.webmanifest', 'icons/gpay.png', 'icons/phonepe.png', 'icons/supermoney.png', 'icons/bhim.png', 'icon-192.png', 'icon-512.png'];
 const OCR_FILES = ['tess/tesseract.min.js', 'tess/worker.min.js', 'tess/tesseract-core-lstm.wasm.js', 'tess/tesseract-core-simd-lstm.wasm.js', 'tess/eng.traineddata.gz'];
 
 self.addEventListener('install', (e) => {

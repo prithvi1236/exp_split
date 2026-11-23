@@ -404,12 +404,9 @@ details[open] .chev { transform: rotate(90deg); }
 /* Paying back by UPI */
 a.btn { text-decoration: none; }
 .pay { display: grid; gap: 10px; margin: 4px 0 14px; text-align: center; align-content: start; }
-.pay .apps .chip { align-self: center; }
-.pay .apps { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
-.chip {
-  padding: 7px 14px; border-radius: 999px; border: 1px solid var(--line); background: var(--card);
-  color: var(--text); font-size: 14px; font-weight: 600; text-decoration: none;
-}
+.pay .apps { display: flex; flex-wrap: wrap; justify-content: center; gap: 14px; }
+.app { display: block; border-radius: 11px; overflow: hidden; box-shadow: 0 0 0 1px var(--line); line-height: 0; }
+.app img { display: block; width: 44px; height: 44px; }
 .pay .link { font-size: 13px; padding: 0; }
 .center { text-align: center; }
 p.center { margin: 4px 0 14px; }
