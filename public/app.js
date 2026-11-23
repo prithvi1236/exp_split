@@ -115,11 +115,13 @@ const isEveryone = (shares) => C.isEveryone(S, shares);
 /* Confirming stores what was agreed to: the person's items and the bill's tax and tip. If either
    changes later, the stored value no longer matches and they are simply asked to confirm again. */
 const sig = (row, r) => `${row.base}:${r.extra}`;
-/* `need` is who still has a share to agree to. On the host's phone that leaves out the host:
-   finalizing is how the host agrees, so "1/2" means one of the other two has confirmed. */
+/* The host's person on the bill. Bills shared before it was recorded only know it on the host's own phone. */
+const hostId = () => S.host || (host() ? selfId() : null);
+/* `need` is who has a share to agree to: everyone but the host, since finalizing is how the host
+   agrees. So "1/2" means one of the other two has confirmed. */
 function status() {
   const r = compute(), ok = new Set(r.per.filter((x) => x.p.ok === sig(x, r)).map((x) => x.p.id));
-  const need = r.per.filter((x) => !(host() && x.p.id === selfId())).map((x) => x.p.id);
+  const need = r.per.filter((x) => x.p.id !== hostId()).map((x) => x.p.id);
   return { r, ok, need, done: need.filter((id) => ok.has(id)).length };
 }
 
@@ -479,7 +481,7 @@ function myView() {
     ${left.length ? `<div class="banner"><span class="grow">Nobody has picked ${esc(names)} yet.</span><button class="link" data-act="back">Is it yours?</button></div>` : ''}
     <div class="card">${r.per.map(({ p, total }) => `<div class="row">${av(p)}
       <span class="grow"><div class="name">${esc(p.name)}${p.id === R.me ? ' (you)' : ''}</div>
-      <div class="sub">${ok.has(p.id) ? 'Confirmed ✓' : S.locked ? '' : 'Not confirmed yet'}</div></span>
+      <div class="sub">${p.id === hostId() ? 'Host · finalizes the split' : ok.has(p.id) ? 'Confirmed ✓' : S.locked ? '' : 'Not confirmed yet'}</div></span>
       <span class="amt">${fmt(total)}</span></div>`).join('')}</div>`;
 }
 
@@ -733,7 +735,7 @@ async function shareBill() {
   try {
     const res = await fetch('api/room', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ doc: Object.fromEntries(C.DOC.map((k) => [k, S[k]])) }),
+      body: JSON.stringify({ doc: { ...Object.fromEntries(C.DOC.map((k) => [k, S[k]])), host: mine } }),
     });
     const d = await res.json().catch(() => ({}));
     if (!res.ok) { toast(d.message || "Couldn't share the bill. Try again."); return; }

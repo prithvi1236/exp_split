@@ -5,7 +5,9 @@
    A bill D is { items, people, total, cur, note, locked }. */
 export const COLORS = ['#0f766e', '#c2410c', '#6d28d9', '#be185d', '#1d4ed8', '#4d7c0f', '#b45309', '#475569'];
 export const CURS = ['₹', '$', '€', '£', '¥', ''];
-export const DOC = ['items', 'people', 'total', 'cur', 'note', 'locked'];
+/* `host` is the person id of whoever shared the bill (null if they are not on it). It is set once, when
+   the bill is shared, so every phone knows whose share needs no confirming: the host agrees by finalizing. */
+export const DOC = ['items', 'people', 'total', 'cur', 'note', 'locked', 'host'];
 
 /* ---------- money ---------- */
 export const cents = (n) => Math.round((Number(n) || 0) * 100);
@@ -130,6 +132,7 @@ export function apply(D, op, out = {}) {
       break;
     case 'person-del':
       D.people = D.people.filter((x) => x.id !== op.p);
+      if (D.host === op.p) D.host = null;
       D.items.forEach((i) => {
         delete i.shares[op.p];
         i.parts?.forEach((sh) => { delete sh[op.p]; });
@@ -241,7 +244,8 @@ export function cleanDoc(d) {
   const people = d.people.slice(0, 40)
     .map((p) => (p && ID.test(p.id) && str(p.name, 24) ? { id: p.id, name: str(p.name, 24), color: COLORS.includes(p.color) ? p.color : COLORS[0] } : null))
     .filter(Boolean);
-  return { items, people, total: money(d.total) > 0 ? money(d.total) : null, cur: CURS.includes(d.cur) ? d.cur : '', note: d.note ? str(d.note, 300) : null, locked: false };
+  const host = people.some((p) => p.id === d.host) ? d.host : null;
+  return { items, people, total: money(d.total) > 0 ? money(d.total) : null, cur: CURS.includes(d.cur) ? d.cur : '', note: d.note ? str(d.note, 300) : null, locked: false, host };
 }
 
 /* One op: returns a copy holding only the fields apply() reads, or null if it is not usable. */
