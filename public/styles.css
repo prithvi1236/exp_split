@@ -400,3 +400,17 @@ details[open] .chev { transform: rotate(90deg); }
 .help-body { padding: 20px 16px calc(16px + env(safe-area-inset-bottom)); }
 .help-body ul { margin: 12px 0 18px; padding-left: 18px; display: grid; gap: 10px; font-size: 15px; }
 .help-body .tipsback { margin-right: auto; }
+
+/* Paying back by UPI */
+a.btn { text-decoration: none; }
+.pay { display: grid; gap: 10px; margin: 4px 0 14px; text-align: center; align-content: start; }
+.pay .apps .chip { align-self: center; }
+.pay .apps { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+.chip {
+  padding: 7px 14px; border-radius: 999px; border: 1px solid var(--line); background: var(--card);
+  color: var(--text); font-size: 14px; font-weight: 600; text-decoration: none;
+}
+.pay .link { font-size: 13px; padding: 0; }
+.center { text-align: center; }
+p.center { margin: 4px 0 14px; }
+.row.upi-add { width: 100%; margin-bottom: 12px; border: 1px dashed var(--line); border-radius: var(--radius); }

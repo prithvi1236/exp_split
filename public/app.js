@@ -2,13 +2,14 @@
    A shared bill lives in a room on the server (api/room) and every phone in it is kept in step.
    A scanned photo goes to /api/scan. */
 import * as C from './core.js';
+import * as UPI from './upi.js';
 const { cents, allocate, canCount, slots } = C;
 
 const $ = (s) => document.querySelector(s);
-const KEY = 'splitbill.v1', NAMES = 'splitbill.names', CUR = 'splitbill.cur', ROOM = 'splitbill.room.', MYNAME = 'splitbill.me';
+const KEY = 'splitbill.v1', NAMES = 'splitbill.names', CUR = 'splitbill.cur', ROOM = 'splitbill.room.', MYNAME = 'splitbill.me', MYUPI = 'splitbill.upi';
 const STEPS = ['Bill', 'Split', 'Result'];
 
-const view = $('#view'), nextBtn = $('#next'), backBtn = $('#back'), sheet = $('#sheet'), personSheet = $('#personSheet'), meSheet = $('#meSheet'), optSheet = $('#optSheet'), helpSheet = $('#helpSheet');
+const view = $('#view'), nextBtn = $('#next'), backBtn = $('#back'), sheet = $('#sheet'), personSheet = $('#personSheet'), meSheet = $('#meSheet'), optSheet = $('#optSheet'), helpSheet = $('#helpSheet'), upiSheet = $('#upiSheet');
 let R = loadRoom();               // the shared bill this phone is in, or null when the bill is only on this device
 let S = load();
 let editingId = null, editingPerson = null;
@@ -58,6 +59,9 @@ function loadRoom() {
 /* The name this phone's owner goes by. Asked for once, on the first screen, and kept for every bill. */
 function myName() { try { return localStorage.getItem(MYNAME) || ''; } catch { return ''; } }
 function setMyName(name) { try { localStorage.setItem(MYNAME, name); } catch {} }
+/* The host's UPI ID, kept on this phone so every new bill they start can be paid back to it. */
+function myUpi() { try { return localStorage.getItem(MYUPI) || ''; } catch { return ''; } }
+function setMyUpi(pa) { try { if (pa) localStorage.setItem(MYUPI, pa); else localStorage.removeItem(MYUPI); } catch {} }
 const selfId = () => (R ? R.me : S.me);          // this phone's owner as a person on the bill, if they are on it
 /* A bill that starts on this phone has its owner on it from the start. */
 function ensureSelf() {
@@ -118,6 +122,22 @@ const isEveryone = (shares) => C.isEveryone(S, shares);
 const sig = (row, r) => `${row.base}:${r.extra}`;
 /* The host's person on the bill. Bills shared before it was recorded only know it on the host's own phone. */
 const hostId = () => S.host || (host() ? selfId() : null);
+/* Who everyone pays back, by UPI. UPI is rupees only. */
+const payee = () => (S.cur === '₹' && S.upi?.pa ? S.upi : null);
+const hostName = () => S.people.find((p) => p.id === hostId())?.name || myName();
+/* A bill the host starts gets the UPI ID they used last time. */
+function carryUpi() {
+  const pa = myUpi();
+  if (host() && pa && !S.upi && S.cur === '₹' && S.items.length && !(R && !R.base)) act({ t: 'upi', pa, pn: hostName() || pa });
+}
+/* A guest's way to pay their share: their UPI app opens with the host and the amount filled in. */
+function payBox(c) {
+  const to = payee();
+  if (!to || c <= 0) return '';
+  const apps = UPI.isIOS() ? `<div class="apps">${UPI.APPS.map(([n, base]) => `<a class="chip" href="${esc(UPI.link(to, c, base))}">${n}</a>`).join('')}</div>` : '';
+  return `<div class="pay"><a class="btn primary block" href="${esc(UPI.link(to, c))}">Pay ${esc(to.pn)} ${fmt(c)} by UPI</a>${apps}
+    <p class="muted small">To ${esc(to.pa)} · <button class="link" data-act="copy-upi">Copy UPI ID</button></p></div>`;
+}
 /* `need` is who has a share to agree to: everyone but the host, since finalizing is how the host
    agrees. So "1/2" means one of the other two has confirmed. */
 function status() {
@@ -522,8 +542,12 @@ function resultView() {
   const room = !R ? '' : S.locked
     ? `<div class="banner calm"><span class="grow"><b>Final.</b> Nobody can change the split now.</span><button class="link" data-act="unlock">Reopen</button></div>`
     : `<p class="lead">${done} of ${need.length} confirmed${offline ? ' · reconnecting…' : ''}. Finalize when you are happy with it.</p>`;
+  const upi = S.cur !== '₹' ? '' : S.upi
+    ? `<div class="banner calm"><span class="grow">Everyone pays you back by UPI to <b>${esc(S.upi.pa)}</b></span><button class="link" data-act="edit-upi">Change</button></div>`
+    : `<button class="row add upi-add" data-act="edit-upi">Get paid back by UPI: add your UPI ID</button>`;
   return `${room}<div class="grand"><div class="muted small">Bill total</div><div class="big">${fmt(r.total)}</div>
       <div class="check">✓ Shares add up to ${fmt(r.per.reduce((a, x) => a + x.total, 0))}</div></div>
+    ${upi}
     ${r.per.map(({ p, total, lines, extra }) => `<details class="card" data-p="${p.id}">
       <summary class="row">${av(p)}
         <span class="grow"><div class="name">${esc(p.name)}</div><div class="sub">${lines.length} item${lines.length === 1 ? '' : 's'}${!R || !asks(p.id) ? '' : ok.has(p.id) ? ' · confirmed ✓' : S.locked ? '' : ' · not confirmed yet'}</div></span>
@@ -545,11 +569,12 @@ function myView() {
   const { r, ok } = status(), x = r.per.find((row) => row.p.id === R.me), left = S.locked ? [] : unassigned();
   const names = left.slice(0, 3).map((i) => i.name).join(', ') + (left.length > 3 ? ` and ${left.length - 3} more` : '');
   return `${x ? `<div class="grand"><div class="muted small">Your share, ${esc(x.p.name)}</div><div class="big">${fmt(x.total)}</div>
-      <div class="check">${S.locked ? 'Final ✓' : ok.has(x.p.id) ? '✓ Confirmed. You are all done.' : 'Check your items, then confirm below.'}</div></div>
+      <div class="check">${S.locked ? 'Final ✓' : ok.has(x.p.id) ? (payee() && x.total > 0 ? `✓ Confirmed. Now pay ${esc(payee().pn)} below.` : '✓ Confirmed. You are all done.') : 'Check your items, then confirm below.'}</div></div>
     <div class="card"><div class="lines">
       ${x.lines.map((l) => `<div><span>${esc(l.name)}${l.frac ? ` <span class="muted">(${l.frac})</span>` : ''}</span><span>${fmt(l.amt)}</span></div>`).join('') || '<div class="muted">Nothing</div>'}
       ${x.extra ? `<div class="muted"><span>${x.extra > 0 ? 'Tax / tip share' : 'Discount share'}</span><span>${fmt(x.extra)}</span></div>` : ''}
-    </div></div>`
+    </div></div>
+    ${S.locked || ok.has(x.p.id) ? payBox(x.total) : payee() && x.total > 0 ? `<p class="muted small center">Once you confirm, you can pay ${esc(payee().pn)} by UPI from here.</p>` : ''}`
     : `<div class="grand"><div class="muted small">Bill total</div><div class="big">${fmt(r.total)}</div><div class="check">Final ✓</div></div>`}
     ${left.length ? `<div class="banner"><span class="grow">Nobody has picked ${esc(names)} yet.</span><button class="link" data-act="back">Is it yours?</button></div>` : ''}
     <div class="card">${r.per.map(({ p, total }) => `<div class="row">${av(p)}
@@ -563,6 +588,7 @@ function personText(id) {
   return [`${x.p.name}, your share of the bill is ${fmt(x.total)}`, '',
     ...x.lines.map((l) => `${l.name}${l.frac ? ` (${l.frac})` : ''}: ${fmt(l.amt)}`),
     ...(x.extra ? [`${x.extra > 0 ? 'Tax / tip share' : 'Discount share'}: ${fmt(x.extra)}`] : []),
+    ...(payee() && id !== hostId() && x.total > 0 ? ['', `Pay ${payee().pn} by UPI: ${UPI.pageLink(payee(), x.total)}`] : []),
   ].join('\n');
 }
 
@@ -603,11 +629,13 @@ function shareText() {
   return ['Bill split — total ' + fmt(r.total), '',
     ...r.per.map((x) => `${x.p.name}: ${fmt(x.total)}`), '',
     ...r.per.map((x) => `${x.p.name} — ${x.lines.map((l) => l.name + (l.frac ? ` (${l.frac})` : '')).join(', ') || 'nothing'}`),
+    ...(payee() ? ['', `Pay ${payee().pn} by UPI: ${payee().pa}`] : []),
   ].join('\n');
 }
 
 function render() {
   ensureSelf();
+  carryUpi();
   save();
   const isHost = host(), first = isHost ? 0 : 1;
   const mine = S.people.find((p) => p.id === selfId())?.name || myName();
@@ -705,7 +733,7 @@ function adopt(d) {
 }
 /* Redraw for a change that came from someone else, but never under a finger or a keyboard. */
 function softRender() {
-  if (pressing || sheet.open || personSheet.open || meSheet.open || optSheet.open || helpSheet.open || ['total', 'cur', 'iSearch'].includes(document.activeElement?.id)) { stale = true; return; }
+  if (pressing || sheet.open || personSheet.open || meSheet.open || optSheet.open || helpSheet.open || upiSheet.open || ['total', 'cur', 'iSearch'].includes(document.activeElement?.id)) { stale = true; return; }
   stale = false;
   render();
 }
@@ -713,7 +741,7 @@ const settle = () => setTimeout(() => { if (stale) softRender(); }, 60);
 document.addEventListener('pointerdown', () => { pressing = true; });
 ['pointerup', 'pointercancel'].forEach((ev) => document.addEventListener(ev, () => { pressing = false; settle(); }));
 document.addEventListener('focusout', settle);
-[sheet, personSheet, meSheet, optSheet, helpSheet].forEach((d) => d.addEventListener('close', settle));
+[sheet, personSheet, meSheet, optSheet, helpSheet, upiSheet].forEach((d) => d.addEventListener('close', settle));
 
 /* Sends this phone's changes, oldest first, one request at a time. Each op has an id, so a request
    that is retried after a dropped connection is never applied twice. */
@@ -926,7 +954,7 @@ function scanTick() {
 /* Refresh the live list, but never while the user is typing in a field. */
 function scanLive() {
   scanTick();
-  if (S.step <= 1 && !/^(INPUT|SELECT)$/.test(document.activeElement?.tagName || '') && !sheet.open && !personSheet.open && !meSheet.open) render();
+  if (S.step <= 1 && !/^(INPUT|SELECT)$/.test(document.activeElement?.tagName || '') && !sheet.open && !personSheet.open && !meSheet.open && !upiSheet.open) render();
 }
 
 async function scan(file) {
@@ -1001,7 +1029,7 @@ async function copy(text) {
 
 /* ---------- events ---------- */
 const HOST_ONLY = ['scan', 'add-item', 'edit-item', 'delete-item', 'dismiss-note', 'del-person', 'edit-person', 'add-person', 'add-recent',
-  'rest-all', 'all-equal', 'whole', 'by-unit', 'uneven', 'inc', 'dec', 'share-bill', 'ok-for', 'unlock'];
+  'rest-all', 'all-equal', 'whole', 'by-unit', 'uneven', 'inc', 'dec', 'share-bill', 'ok-for', 'unlock', 'edit-upi', 'del-upi'];
 
 document.addEventListener('click', async (e) => {
   if (held) { held = false; return; }       // the click that ends a hold on a name is not a tap
@@ -1084,6 +1112,9 @@ document.addEventListener('click', async (e) => {
     case 'join': join(el.dataset.name); return;
     case 'not-me': R.me = null; break;
     case 'share-one': shareOut(personText(id)); return;
+    case 'edit-upi': openUpi(); return;
+    case 'del-upi': act({ t: 'upi' }); setMyUpi(''); upiSheet.close(); break;
+    case 'copy-upi': if (payee()) { try { await navigator.clipboard.writeText(payee().pa); toast('UPI ID copied'); } catch { toast(payee().pa); } } return;
     case 'image': shareImage(); return;
     case 'sel': {
       adding = false;
@@ -1180,6 +1211,14 @@ function openMe() {
   $('#mName').focus();
 }
 
+function openUpi() {
+  $('#uId').value = S.upi?.pa || myUpi();
+  $('#uErr').hidden = true;
+  $('#uDel').hidden = !S.upi;
+  upiSheet.showModal();
+  $('#uId').focus();
+}
+
 function openPerson(id) {
   const who = S.people.find((x) => x.id === id);
   if (!who) return;
@@ -1220,6 +1259,16 @@ document.addEventListener('submit', (e) => {
     if (onBill) act({ t: 'person-name', p: id, name });      // the group sees the new name too
     setMyName(name);
     meSheet.close();
+    render();
+    return;
+  }
+  if (e.target.id === 'upiEdit') {
+    e.preventDefault();
+    const pa = $('#uId').value.trim().replace(/\s+/g, '');
+    if (!UPI.VPA.test(pa)) { $('#uErr').textContent = 'Enter a UPI ID like name@bank.'; $('#uErr').hidden = false; return; }
+    act({ t: 'upi', pa, pn: hostName() || pa });
+    setMyUpi(pa);
+    upiSheet.close();
     render();
     return;
   }
@@ -1273,7 +1322,7 @@ document.addEventListener('pointermove', (e) => {
 ['pointerup', 'pointercancel'].forEach((t) => document.addEventListener(t, () => { clearTimeout(holdT); holdAt = null; }));
 document.addEventListener('contextmenu', (e) => { if (e.target.closest('.rail')) e.preventDefault(); });
 
-[sheet, personSheet, meSheet, optSheet, helpSheet].forEach((d) => d.addEventListener('click', (e) => { if (e.target === d) d.close(); }));
+[sheet, personSheet, meSheet, optSheet, helpSheet, upiSheet].forEach((d) => d.addEventListener('click', (e) => { if (e.target === d) d.close(); }));
 
 if (R?.base) rebase();
 render();

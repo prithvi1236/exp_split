@@ -2,12 +2,14 @@
    The app and the room function (functions/api/room) both run this file, so a change made on
    one phone is replayed the same way on the server and on everyone else's phone.
 
-   A bill D is { items, people, total, cur, note, locked }. */
+   A bill D is { items, people, total, cur, note, locked, host, upi }. */
+import { VPA } from './upi.js';
 export const COLORS = ['#0f766e', '#c2410c', '#6d28d9', '#be185d', '#1d4ed8', '#4d7c0f', '#b45309', '#475569'];
 export const CURS = ['₹', '$', '€', '£', '¥', ''];
 /* `host` is the person id of whoever shared the bill (null if they are not on it). It is set once, when
-   the bill is shared, so every phone knows whose share needs no confirming: the host agrees by finalizing. */
-export const DOC = ['items', 'people', 'total', 'cur', 'note', 'locked', 'host'];
+   the bill is shared, so every phone knows whose share needs no confirming: the host agrees by finalizing.
+   `upi` is { pa, pn }: the UPI ID and name everyone pays their share back to, or null. */
+export const DOC = ['items', 'people', 'total', 'cur', 'note', 'locked', 'host', 'upi'];
 
 /* ---------- money ---------- */
 export const cents = (n) => Math.round((Number(n) || 0) * 100);
@@ -88,7 +90,8 @@ export function compute(D) {
    not what the result should be, so two people's taps arriving in either order both land.
    `out.miss` is set when an op could do nothing (the last unit was just taken); `out.me` on a join. */
 export function apply(D, op, out = {}) {
-  if (D.locked && op.t !== 'lock') { out.miss = 'locked'; return out; }
+  // The UPI ID can still change once the split is final: paying back happens after that.
+  if (D.locked && op.t !== 'lock' && op.t !== 'upi') { out.miss = 'locked'; return out; }
   const it = op.id != null ? D.items.find((i) => i.id === op.id) : null;
   const who = op.p != null ? D.people.find((x) => x.id === op.p) : null;
   const dup = (name, but) => D.people.find((x) => x.id !== but && x.name.toLowerCase() === name.toLowerCase());
@@ -205,6 +208,7 @@ export function apply(D, op, out = {}) {
 
     case 'confirm': if (who) who.ok = op.sig; break;   // holds the share they agreed to; it lapses by itself if the share changes
     case 'lock': D.locked = op.on; break;
+    case 'upi': D.upi = op.pa ? { pa: op.pa, pn: op.pn } : null; break;
   }
   return out;
 }
@@ -245,7 +249,8 @@ export function cleanDoc(d) {
     .map((p) => (p && ID.test(p.id) && str(p.name, 24) ? { id: p.id, name: str(p.name, 24), color: COLORS.includes(p.color) ? p.color : COLORS[0] } : null))
     .filter(Boolean);
   const host = people.some((p) => p.id === d.host) ? d.host : null;
-  return { items, people, total: money(d.total) > 0 ? money(d.total) : null, cur: CURS.includes(d.cur) ? d.cur : '', note: d.note ? str(d.note, 300) : null, locked: false, host };
+  const upi = d.upi && VPA.test(d.upi.pa) ? { pa: d.upi.pa, pn: str(d.upi.pn, 40) } : null;
+  return { items, people, total: money(d.total) > 0 ? money(d.total) : null, cur: CURS.includes(d.cur) ? d.cur : '', note: d.note ? str(d.note, 300) : null, locked: false, host, upi };
 }
 
 /* One op: returns a copy holding only the fields apply() reads, or null if it is not usable. */
@@ -279,6 +284,10 @@ export function sanitize(raw) {
     }
     case 'confirm': return p && /^-?\d{1,12}:-?\d{1,12}$/.test(raw.sig) ? { ...o, p, sig: raw.sig } : null;
     case 'lock': return { ...o, on: !!raw.on };
+    case 'upi': {                               // no UPI ID clears it
+      if (!raw.pa) return o;
+      return VPA.test(raw.pa) ? { ...o, pa: raw.pa, pn: str(raw.pn, 40) } : null;
+    }
   }
   return null;
 }

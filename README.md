@@ -42,6 +42,10 @@ The host taps **Share** at the top of the Split step and sends the link. Everyon
 - Phones ask for changes every 2 seconds while the page is visible; an unchanged bill answers with an empty 204.
 - A confirmation stores the share that was agreed to. If that person's items or the bill's tax change afterwards, it lapses and they are asked again.
 
+## Paying back by UPI
+
+On ₹ bills the host taps **Get paid back by UPI** on the Result step and enters their UPI ID once; it is kept on their phone for later bills. Everyone else then gets a **Pay ₹X by UPI** button (on a shared bill, once they confirm) that opens their UPI app with the host and their share filled in, so they only enter their PIN. Chat apps don't let `upi://` links be tapped, so the share text sent to each person links to `pay.html` instead, which opens the UPI app. On iPhones, which send `upi://` to a single app, it also offers GPay, PhonePe, Paytm and BHIM directly. `public/upi.js` builds the links.
+
 ## Run locally
 
 ```bash
