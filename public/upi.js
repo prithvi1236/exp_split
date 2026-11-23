@@ -10,7 +10,7 @@ const NOTE = 'Bill split';
 export const APPS = [
   ['Google Pay', 'gpay://upi/pay', 'gpay'],
   ['PhonePe', 'phonepe://pay', 'phonepe'],
-  ['super.money', 'super://upi/pay', 'supermoney'],   // scheme from UPI integration docs; the path is the common one, not confirmed
+  ['super.money', 'super://pay', 'supermoney'],   // tried on an iPhone: super://upi/pay opens the app without the amount
   ['BHIM', 'bhim://upi/pay', 'bhim'],
 ];
 export const isIOS = () => /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
