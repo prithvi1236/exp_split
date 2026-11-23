@@ -377,3 +377,26 @@ details[open] .chev { transform: rotate(90deg); }
 .opts .opt { border: 1px solid var(--line); border-radius: 12px; margin-bottom: 6px; }
 .opts .opt .name { white-space: normal; }
 .opts .btn { margin-top: 6px; }
+
+/* One tip at a time on the host's Split step; it goes once the host does what it says */
+.tip {
+  display: flex; align-items: flex-start; gap: 6px; margin: 0 0 12px; padding: 10px 6px 10px 12px;
+  border-radius: 12px; border: 1px dashed color-mix(in srgb, var(--accent) 45%, var(--line));
+  font-size: 14px; color: var(--text); background: color-mix(in srgb, var(--accent) 6%, var(--bg));
+}
+.tip .link { font-size: 14px; padding: 0; }
+.tip .x { font-size: 18px; padding: 0 6px; margin-top: -1px; }
+/* The Share tip draws the eye to the header button */
+.sharebtn.nudge { animation: nudge 1.4s ease-out 3; }
+@keyframes nudge { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 55%, transparent); } 100% { box-shadow: 0 0 0 10px transparent; } }
+@media (prefers-reduced-motion: reduce) { .sharebtn.nudge { animation: none; outline: 2px solid var(--accent); } }
+
+/* ? at the end of the steps bar, and its sheet */
+.steps .help {
+  flex: none; align-self: flex-end; width: 26px; height: 26px; margin-left: 4px; border-radius: 50%;
+  border: 1.5px solid var(--line); color: var(--muted); font-size: 13px; font-weight: 700; padding: 0;
+  display: grid; place-items: center;
+}
+.help-body { padding: 20px 16px calc(16px + env(safe-area-inset-bottom)); }
+.help-body ul { margin: 12px 0 18px; padding-left: 18px; display: grid; gap: 10px; font-size: 15px; }
+.help-body .tipsback { margin-right: auto; }

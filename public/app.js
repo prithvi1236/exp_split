@@ -8,7 +8,7 @@ const $ = (s) => document.querySelector(s);
 const KEY = 'splitbill.v1', NAMES = 'splitbill.names', CUR = 'splitbill.cur', ROOM = 'splitbill.room.', MYNAME = 'splitbill.me';
 const STEPS = ['Bill', 'Split', 'Result'];
 
-const view = $('#view'), nextBtn = $('#next'), backBtn = $('#back'), sheet = $('#sheet'), personSheet = $('#personSheet'), meSheet = $('#meSheet'), optSheet = $('#optSheet');
+const view = $('#view'), nextBtn = $('#next'), backBtn = $('#back'), sheet = $('#sheet'), personSheet = $('#personSheet'), meSheet = $('#meSheet'), optSheet = $('#optSheet'), helpSheet = $('#helpSheet');
 let R = loadRoom();               // the shared bill this phone is in, or null when the bill is only on this device
 let S = load();
 let editingId = null, editingPerson = null;
@@ -22,6 +22,7 @@ const keep = new Set();
 /* Item search, on this phone only. It is offered once the bill's items no longer fit on one screen,
    and stays offered for that bill (`searchable`) so the button does not come and go. */
 let searching = false, query = '', searchable = false;
+let tipNow = null;                // the tip the Split step is showing, so the header can point at Share
 
 /* ---------- state ---------- */
 function guessCur() {
@@ -228,9 +229,34 @@ function closeSearch() { searching = false; query = ''; }
 const PENCIL = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>';
 const DOTS = '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>';
 const SHARE = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v13"/><path d="m7 8 5-5 5 5"/><path d="M5 14v6h14v-6"/></svg>';
-/* Has this phone's owner learnt to hold a name to pick several people? Until then the Split step says how. */
-const HELD = 'splitbill.held';
-function heldOnce() { try { return !!localStorage.getItem(HELD); } catch { return false; } }
+/* ---------- tips ----------
+   The host's Split step teaches one thing at a time, in the line above the list, at the moment it is
+   useful. A tip goes away for good on this phone once the person does what it describes (or closes it).
+   The ? sheet explains every step on request and can bring the tips back. */
+const TIPS = 'splitbill.tips', HELD = 'splitbill.held';      // HELD: the one tip that existed before this list
+function learnt() { try { return JSON.parse(localStorage.getItem(TIPS)) || {}; } catch { return {}; } }
+function learned(t) {
+  if (t === 'held') { try { if (localStorage.getItem(HELD)) return true; } catch {} }
+  return !!learnt()[t];
+}
+function learn(t) {
+  if (learned(t)) return;
+  try { localStorage.setItem(TIPS, JSON.stringify({ ...learnt(), [t]: 1 })); } catch {}
+}
+function forgetTips() { try { localStorage.removeItem(TIPS); localStorage.removeItem(HELD); } catch {} }
+/* The one tip to show now on the host's Split step, picking for one person: [id, html], or null. */
+function hostTip(one) {
+  const picks = S.items.some((it) => !it.auto && pieces(it).some((pc) => sharersOf(pc.shares).length));
+  const name = esc(one.name);
+  if (!learned('pick')) return ['pick', `Tap everything ${name} had. Tap another name to switch person.`];
+  if (!picks) return null;
+  if (!learned('held')) return ['held', 'Shared something? Hold another name to pick for both together.'];
+  if (!R && !learned('share')) return ['share', 'Let everyone pick their own items on their phone. <button class="link" data-act="share-bill">Share the bill</button>'];
+  if (!learned('more') && S.items.some((it) => itemOpts(it).length && sharers(it).length >= 2))
+    return ['more', 'Not an even split? Tap <b>⋯</b> on an item for more ways to split it.'];
+  if (!learned('rename')) return ['rename', `Tap ${name} again to rename or remove them.`];
+  return null;
+}
 /* The less common ways to split an item, shown in its ⋯ sheet: [action, label, what it does]. */
 function itemOpts(it) {
   const isHost = host(), units = slots(it), out = [];
@@ -251,6 +277,48 @@ function openOpts(id) {
       <span class="grow"><div class="name">${label}</div><div class="sub">${sub}</div></span></button>`).join('')}
     <button class="btn ghost" data-act="close-sheet">Cancel</button>`;
   optSheet.showModal();
+}
+/* The ? sheet: what the current step is for and how to use it, for the host or a guest. */
+const HELP = {
+  host: [
+    ['The bill', [
+      'Scan the bill, or type the items. Tap any line to fix its name, quantity or price.',
+      'Enter the <b>bill total</b> as printed. Tax, tip and charges are then shared in proportion to what each person had.',
+      'You can add people on the next step while the bill is still being read.']],
+    ['Who had what', [
+      'Tap a name at the top, then tap everything they had. Tap an item again to take it off.',
+      'Shared something? Tap it for each person, or <b>hold</b> a second name to pick for several at once. <b>Everyone</b> picks the whole table.',
+      'Items with a count, like 3 lassis, show one slot each. Tap a free slot to take one, or a filled slot to share it.',
+      '<b>⋯</b> on an item: split it unevenly, share it as one, or split it by unit.',
+      '<b>Left</b> shows items nobody has yet. <b>Split rest between everyone</b> finishes them in one go.',
+      '<b>Share</b> at the top lets everyone pick their own items on their phone. Tap a picked name again to rename or remove them.']],
+    ['The split', [
+      'Each share includes that person\'s part of tax and tip. Tap a person to see their items.',
+      'From there, send them their share, or confirm for someone without a phone.',
+      'Once shared, <b>Finalize</b> locks the split when you are happy. <b>Reopen</b> unlocks it.',
+      'Share the whole split as a picture or as text for the group chat.']],
+  ],
+  guest: [
+    null,
+    ['Pick yours', [
+      'Pick your name, then tap everything you had.',
+      'Shared something? Tap the other person\'s name too, then tap the item. <b>Done</b> goes back to just you.',
+      'Items with a count show one slot each. Tap a free slot to take one, or a filled slot to share it.',
+      '<b>Left</b> shows items nobody has picked yet. One of them might be yours.']],
+    ['Your share', [
+      'Check your items, then confirm your share.',
+      'If your items or the tax change later, you will be asked to confirm again.',
+      'The host finalizes the split once everyone is happy.']],
+  ],
+};
+function openHelp() {
+  const isHost = host(), [title, lines] = HELP[isHost ? 'host' : 'guest'][S.step] || HELP.guest[1];
+  $('#help').innerHTML = `<h2>${title}</h2>
+    <ul>${lines.map((l) => `<li>${l}</li>`).join('')}</ul>
+    <div class="sheet-actions">
+      ${isHost ? '<button class="btn ghost tipsback" data-act="tips-again">Show tips again</button>' : ''}
+      <button class="btn primary" data-act="close-sheet">Got it</button></div>`;
+  helpSheet.showModal();
 }
 /* Holding a name adds them to (or drops them from) the people being picked for. */
 function toggleIn(p, keepId) {
@@ -338,7 +406,10 @@ function assignView() {
     : all ? 'Tap what everyone shared.' + done
     : S.multi ? (group.length <= 3 ? `Tap what ${esc(group.slice(0, -1).map((p) => p.name).join(', '))} and ${esc(group[group.length - 1].name)} shared.`
       : `Tap what these ${group.length} shared.`) + done
-    : !heldOnce() && one ? `Tap everything ${esc(one.name)} had. Hold another name to pick for both together.` : '';
+    : '';
+  // Otherwise, picking for one person, the host sees the next thing worth learning, if any.
+  const tip = isHost && !lead && one && !S.locked && S.items.length ? hostTip(one) : null;
+  tipNow = tip?.[0] || null;
   // One line for the whole table, in place of separate banners: start from an equal split, or settle what is left.
   const bar = !isHost || S.locked || S.people.length < 2 || !S.items.length ? ''
     : untouched ? `<div class="banner calm"><span class="grow">Shared by the whole table?</span>
@@ -367,6 +438,8 @@ function assignView() {
     ${recents.length ? `<div class="recent"><span class="sub">Add again</span>
       ${recents.map((n) => `<button class="chip" data-act="add-recent" data-name="${esc(n)}">+ ${esc(n)}</button>`).join('')}</div>` : ''}` : ''}
     ${lead ? `<p class="lead">${lead}</p>` : ''}
+    ${tip ? `<div class="tip" data-tip="${tip[0]}"><span class="grow">${tip[1]}</span>
+      <button class="x" data-act="tip-off" data-tip="${tip[0]}" aria-label="Hide this tip">×</button></div>` : ''}
     ${bar}
     ${filterBar}
     ${shown.length ? `<div class="card ${searching ? 'found' : ''}">${shown.map(itemHtml).join('')}</div>` : ''}
@@ -560,12 +633,14 @@ function render() {
   if (S.locked) S.step = 2;
   else { S.step = Math.max(S.step, first); while (S.step > first && blocker(S.step)) S.step--; }
   $('#steps').innerHTML = (isHost ? STEPS : [null, 'Pick yours', 'Your share']).map((s, i) => s &&
-    `<button class="${i === S.step ? 'now' : i < S.step ? 'done' : ''}" data-act="step" data-step="${i}" ${S.locked || (i > S.step && blocker(i)) ? 'disabled' : ''}>${i + 1 - first}. ${s}</button>`).filter(Boolean).join('');
+    `<button class="${i === S.step ? 'now' : i < S.step ? 'done' : ''}" data-act="step" data-step="${i}" ${S.locked || (i > S.step && blocker(i)) ? 'disabled' : ''}>${i + 1 - first}. ${s}</button>`).filter(Boolean).join('') + `<button class="help" data-act="help" aria-label="How this works">?</button>`;
   // Whatever is being typed, and whichever cards are open, survive the redraw.
   const typed = ['pName', 'jName', 'meName', 'iSearch'].map((id) => { const el = document.getElementById(id); return el && { id, v: el.value, focus: document.activeElement === el }; }).filter(Boolean);
   const openCards = [...view.querySelectorAll('details[open]')].map((d) => d.dataset.p);
   const railX = $('.rail')?.scrollLeft;
+  tipNow = null;
   view.innerHTML = (isHost ? [billView, assignView, resultView] : [null, assignView, myView])[S.step]();
+  shareTop.classList.toggle('nudge', tipNow === 'share');   // the Share tip points at the header button
   const rail = $('.rail');
   if (rail) {                     // keep the rail where it was, with the picked person in view
     if (railX != null) rail.scrollLeft = railX;
@@ -630,7 +705,7 @@ function adopt(d) {
 }
 /* Redraw for a change that came from someone else, but never under a finger or a keyboard. */
 function softRender() {
-  if (pressing || sheet.open || personSheet.open || meSheet.open || optSheet.open || ['total', 'cur', 'iSearch'].includes(document.activeElement?.id)) { stale = true; return; }
+  if (pressing || sheet.open || personSheet.open || meSheet.open || optSheet.open || helpSheet.open || ['total', 'cur', 'iSearch'].includes(document.activeElement?.id)) { stale = true; return; }
   stale = false;
   render();
 }
@@ -638,7 +713,7 @@ const settle = () => setTimeout(() => { if (stale) softRender(); }, 60);
 document.addEventListener('pointerdown', () => { pressing = true; });
 ['pointerup', 'pointercancel'].forEach((ev) => document.addEventListener(ev, () => { pressing = false; settle(); }));
 document.addEventListener('focusout', settle);
-[sheet, personSheet, meSheet, optSheet].forEach((d) => d.addEventListener('close', settle));
+[sheet, personSheet, meSheet, optSheet, helpSheet].forEach((d) => d.addEventListener('close', settle));
 
 /* Sends this phone's changes, oldest first, one request at a time. Each op has an id, so a request
    that is retried after a dropped connection is never applied twice. */
@@ -740,6 +815,7 @@ async function shareBill() {
     const d = await res.json().catch(() => ({}));
     if (!res.ok) { toast(d.message || "Couldn't share the bill. Try again."); return; }
     if (mine) { S.sel = [mine]; S.multi = false; }
+    learn('share');
     R = { id: d.id, key: d.key, token: secret(), me: mine, ver: d.ver, base: d.doc, pending: [], ui: {} };
     try { localStorage.setItem(CUR, R.id); localStorage.removeItem(KEY); } catch {}
     history.replaceState(null, '', '?r=' + R.id);
@@ -933,8 +1009,7 @@ document.addEventListener('click', async (e) => {
   if (!el) return;
   const { act: name, id, p } = el.dataset;
   if (!host() && HOST_ONLY.includes(name)) return;
-  if (optSheet.open && el.closest('#optSheet')) optSheet.close();
-  if (name === 'sel' && host() && p !== 'all' && (e.shiftKey || e.metaKey || e.ctrlKey)) { hold(p); return; }   // keyboard and mouse stand-in for holding
+  if (optSheet.open && el.closest('#optSheet')) optSheet.close();  if (name === 'sel' && host() && p !== 'all' && (e.shiftKey || e.metaKey || e.ctrlKey)) { hold(p); return; }   // keyboard and mouse stand-in for holding
   const it = S.items.find((i) => i.id === id);
   if (['scan', 'add-item'].includes(name) && !myName()) { if (!takeName()) return; render(); }
   switch (name) {
@@ -954,7 +1029,10 @@ document.addEventListener('click', async (e) => {
       removePerson(who.id);
       break;
     }
-    case 'item-more': openOpts(id); return;
+    case 'item-more': learn('more'); render(); openOpts(id); return;   // redraw so the tip about ⋯ goes
+    case 'tip-off': learn(el.dataset.tip); break;
+    case 'help': openHelp(); return;
+    case 'tips-again': forgetTips(); helpSheet.close(); toast('Tips will show again as you go.'); break;
     case 'solo':                              // leave picking together, back to one person
       S.sel = host() ? S.sel.slice(0, 1) : [me()?.id].filter(Boolean); S.multi = false;
       break;
@@ -1016,12 +1094,13 @@ document.addEventListener('click', async (e) => {
       // A guest starts picking with someone just by tapping them; the host holds a name instead.
       if (S.multi || (mine && p !== mine)) { toggleIn(p, mine); break; }
       if (mine) return;                       // a guest tapping their own name: already picked
-      if (S.sel[0] === p) { openPerson(p); return; }   // the host taps the picked person again: rename or remove
+      if (S.sel[0] === p) { learn('rename'); render(); openPerson(p); return; }   // the host taps the picked person again: rename or remove
       S.sel = [p];
       break;
     }
     case 'add-recent': addPerson(el.dataset.name); break;
     case 'pick': {
+      if (host()) learn('pick');
       adding = false;
       if (!it || !S.sel.length) return;
       keep.add(id);                           // it stays on screen even if it no longer matches the filter
@@ -1177,7 +1256,7 @@ let holdT = null, held = false, holdAt = null;
 function hold(p) {
   toggleIn(p, null);
   adding = false;
-  try { localStorage.setItem(HELD, '1'); } catch {}
+  learn('held');
   render();
 }
 document.addEventListener('pointerdown', (e) => {
@@ -1194,7 +1273,7 @@ document.addEventListener('pointermove', (e) => {
 ['pointerup', 'pointercancel'].forEach((t) => document.addEventListener(t, () => { clearTimeout(holdT); holdAt = null; }));
 document.addEventListener('contextmenu', (e) => { if (e.target.closest('.rail')) e.preventDefault(); });
 
-[sheet, personSheet, meSheet, optSheet].forEach((d) => d.addEventListener('click', (e) => { if (e.target === d) d.close(); }));
+[sheet, personSheet, meSheet, optSheet, helpSheet].forEach((d) => d.addEventListener('click', (e) => { if (e.target === d) d.close(); }));
 
 if (R?.base) rebase();
 render();
