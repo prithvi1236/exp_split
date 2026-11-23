@@ -31,7 +31,7 @@ If `/api/scan` fails (OpenRouter down, timeout, no key) or the phone is offline,
 
 ## Shared bills
 
-The host taps **Share bill** on the Split step and sends the link. Everyone who opens it picks their name, taps what they had, and confirms their share. The host can still add people, pick for anyone, confirm for someone without a phone, and finalize. Until a bill is shared it stays on the host's phone.
+The host taps **Share** at the top of the Split step and sends the link. Everyone who opens it picks their name, taps what they had, and confirms their share. The host can still add people, pick for anyone, confirm for someone without a phone, and finalize. Until a bill is shared it stays on the host's phone.
 
 **Roles.** The link (`?r=code`) lets anyone open the bill. The host's phone also holds a secret key, which is what allows editing items and finalizing. Each guest phone has its own token, tied to the person it joined as, and the server only lets it change that person's picks.
 

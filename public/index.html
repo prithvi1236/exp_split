@@ -17,6 +17,7 @@
   <header class="top">
     <h1>Split the Bill</h1>
     <div class="acts">
+      <button id="shareTop" class="sharebtn" data-act="share-bill" hidden></button>
       <button id="meChip" class="mechip" data-act="edit-me" aria-label="Change your name" hidden></button>
       <button id="reset" class="link" data-act="reset">New bill</button>
     </div>
@@ -68,17 +69,22 @@
   <!-- Rename a person -->
   <dialog id="personSheet" class="sheet">
     <form id="personEdit" method="dialog" novalidate>
-      <h2>Rename person</h2>
+      <h2>Edit person</h2>
       <label>Name
         <input id="eName" type="text" autocomplete="off" autocapitalize="words" maxlength="24" enterkeyhint="done">
       </label>
       <p id="eErr" class="err" hidden></p>
       <div class="sheet-actions">
+        <button type="button" id="eDel" class="btn danger" data-act="del-person">Remove</button>
         <button type="button" class="btn ghost" data-act="close-sheet">Cancel</button>
         <button type="submit" class="btn primary">Save</button>
       </div>
     </form>
-    <div id="lift" class="rail lift" hidden></div>
+  </dialog>
+
+  <!-- Less common ways to split one item -->
+  <dialog id="optSheet" class="sheet">
+    <div id="opts" class="opts"></div>
   </dialog>
 
   <!-- The name this phone's owner goes by on every bill -->

@@ -48,7 +48,15 @@ h1, h2, p { margin: 0; }
   padding: calc(14px + env(safe-area-inset-top)) 16px 6px;
 }
 .top h1 { font-size: 20px; letter-spacing: -0.01em; }
+.top h1 { white-space: nowrap; }
 .top .acts { display: flex; align-items: center; gap: 12px; min-width: 0; }
+/* Share / Invite on the host's Split and Result steps, with how many have confirmed */
+.sharebtn {
+  display: inline-flex; align-items: center; gap: 5px; padding: 5px 11px; border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 12%, var(--card)); color: var(--accent);
+  font-size: 13px; font-weight: 700; white-space: nowrap;
+}
+.sharebtn b { font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
 /* Who this phone belongs to; tap to change the name */
 .mechip {
   display: inline-flex; align-items: center; gap: 5px; max-width: 132px; padding: 5px 10px;
@@ -144,7 +152,7 @@ main { flex: 1; overflow-y: auto; padding: 4px 16px 24px; }
 .x { color: var(--muted); font-size: 22px; padding: 4px 8px; line-height: 1; }
 
 /* Assign */
-/* One person / Together switch above the rail */
+/* Segmented control (Left / Yours / All) */
 .seg {
   display: flex; padding: 3px; margin: 0 0 6px; border-radius: 12px;
   background: color-mix(in srgb, var(--muted) 14%, var(--bg));
@@ -160,23 +168,17 @@ main { flex: 1; overflow-y: auto; padding: 4px 16px 24px; }
   border-bottom: 1px solid var(--line); scrollbar-width: none;
 }
 .rail::-webkit-scrollbar { display: none; }
-/* Copy of the active tile shown above the rename sheet's dimming */
-.rail.lift {
-  position: fixed; z-index: auto; margin: 0; padding: 0; border: 0; overflow: visible;
-  background: var(--bg); border-radius: 12px;
-}
-.rail.lift .tile { flex: 1; max-width: none; }
 .rail .tile { position: relative; flex: 1 0 68px; max-width: 96px; display: flex; }
 .rail .tile > [role="tab"] { flex: 1; max-width: none; min-width: 0; }
-/* Edit badge on the corner of each person's avatar */
+/* Pencil on the picked person's avatar: tapping them again renames or removes. The tile takes the tap. */
 .rail .edit {
-  position: absolute; top: 2px; left: calc(50% + 8px); width: 24px; height: 24px; border-radius: 50%;
-  display: grid; place-items: center; background: var(--card); color: var(--text);
+  position: absolute; top: 2px; left: calc(50% + 8px); width: 22px; height: 22px; border-radius: 50%;
+  display: grid; place-items: center; background: var(--card); color: var(--text); pointer-events: none;
   border: 1px solid var(--line); box-shadow: 0 0 0 2px var(--bg);
 }
-.rail .edit.del { background: var(--danger); border-color: var(--danger); color: #fff; }
-.rail .edit::after { content: ""; position: absolute; inset: -6px; }
-/* In Together mode each tile shows a tick in the badge's place; the tile itself takes the tap. */
+/* A name can be held to pick several people, so the rail must not start a text selection or callout. */
+.rail { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+/* Picking several: each tile shows a tick in the pencil's place. */
 .rail .check {
   position: absolute; top: 4px; left: calc(50% + 10px); width: 18px; height: 18px; border-radius: 50%;
   display: grid; place-items: center; pointer-events: none; font-size: 11px; font-weight: 700;
@@ -364,3 +366,14 @@ details[open] .chev { transform: rotate(90deg); }
 .item[hidden] { display: none; }
 .card.found > .item { border-top: 0; }
 .card.found > .item:not([hidden]) ~ .item:not([hidden]) { border-top: 1px solid var(--line); }
+
+/* Item row with its ⋯ button for the less common ways to split it */
+.item .head { display: flex; align-items: stretch; }
+.item .head .row { flex: 1; min-width: 0; }
+.item .head:has(.more) .row { padding-right: 4px; }
+.more { flex: none; width: 40px; display: grid; place-items: center; color: var(--muted); padding-right: 6px; }
+.opts { padding: 20px 16px calc(16px + env(safe-area-inset-bottom)); display: grid; gap: 4px; }
+.opts h2 { margin-bottom: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.opts .opt { border: 1px solid var(--line); border-radius: 12px; margin-bottom: 6px; }
+.opts .opt .name { white-space: normal; }
+.opts .btn { margin-top: 6px; }

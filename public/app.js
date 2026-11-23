@@ -8,11 +8,10 @@ const $ = (s) => document.querySelector(s);
 const KEY = 'splitbill.v1', NAMES = 'splitbill.names', CUR = 'splitbill.cur', ROOM = 'splitbill.room.', MYNAME = 'splitbill.me';
 const STEPS = ['Bill', 'Split', 'Result'];
 
-const view = $('#view'), nextBtn = $('#next'), backBtn = $('#back'), sheet = $('#sheet'), personSheet = $('#personSheet'), meSheet = $('#meSheet');
+const view = $('#view'), nextBtn = $('#next'), backBtn = $('#back'), sheet = $('#sheet'), personSheet = $('#personSheet'), meSheet = $('#meSheet'), optSheet = $('#optSheet');
 let R = loadRoom();               // the shared bill this phone is in, or null when the bill is only on this device
 let S = load();
 let editingId = null, editingPerson = null;
-let delFor = null;               // person whose tile badge is showing delete instead of rename
 let adding = false;               // the add-person panel on the Split step is open
 const openIds = new Set();        // quantity items whose units are unfolded on this phone
 /* Which items the Split list shows on this phone: 'left' (nobody yet), 'mine' (the picked people's),
@@ -222,7 +221,38 @@ function applySearch() {
 function closeSearch() { searching = false; query = ''; }
 
 const PENCIL = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>';
-const TRASH = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/></svg>';
+const DOTS = '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>';
+const SHARE = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v13"/><path d="m7 8 5-5 5 5"/><path d="M5 14v6h14v-6"/></svg>';
+/* Has this phone's owner learnt to hold a name to pick several people? Until then the Split step says how. */
+const HELD = 'splitbill.held';
+function heldOnce() { try { return !!localStorage.getItem(HELD); } catch { return false; } }
+/* The less common ways to split an item, shown in its ⋯ sheet: [action, label, what it does]. */
+function itemOpts(it) {
+  const isHost = host(), units = slots(it), out = [];
+  if (units && it.qty > 6 && !it.auto) out.push(['toggle-slots', openIds.has(it.id) ? 'Hide each one' : 'Show each one', `See who has each of the ${it.qty}`]);
+  if (!isHost) return out;
+  if (units) out.push(['whole', 'Share as one', 'Split the whole price evenly between whoever had any']);
+  else {
+    if (sharers(it).length >= 2) out.push(['uneven', it.uneven ? 'Split equally' : 'Split unevenly', it.uneven ? 'Everyone on it pays the same' : 'Give someone a bigger share']);
+    if (it.whole && canCount(it)) out.push(['by-unit', 'Split by unit', `Pick each of the ${it.qty} separately`]);
+  }
+  return out;
+}
+function openOpts(id) {
+  const it = S.items.find((i) => i.id === id);
+  if (!it) return;
+  $('#opts').innerHTML = `<h2>${esc(it.name)}</h2>
+    ${itemOpts(it).map(([a, label, sub]) => `<button class="row opt" data-act="${a}" data-id="${it.id}">
+      <span class="grow"><div class="name">${label}</div><div class="sub">${sub}</div></span></button>`).join('')}
+    <button class="btn ghost" data-act="close-sheet">Cancel</button>`;
+  optSheet.showModal();
+}
+/* Holding a name adds them to (or drops them from) the people being picked for. */
+function toggleIn(p, keepId) {
+  if (!S.sel.includes(p)) S.sel = [...S.sel, p];
+  else if (S.sel.length > 1 && p !== keepId) S.sel = S.sel.filter((x) => x !== p);
+  S.multi = S.sel.length > 1;
+}
 const av = (p, cls = '') => `<span class="dot ${cls}" style="--c:${p.color}">${esc(p.name[0].toUpperCase())}</span>`;
 
 /* Person-first: pick someone in the rail, then tap everything they had. */
@@ -244,12 +274,6 @@ function assignView() {
   const left = isHost ? unassigned().length : 0;      // only the host may split what is left between everyone
   const st = status(), base = Object.fromEntries(st.r.per.map((r) => [r.p.id, r.base]));
   const saved = myName();
-  const top = !isHost ? ''
-    : R ? `<div class="banner calm"><span class="grow"><b>Shared with the group</b>
-        <div class="sub">${S.people.length ? `${st.ok.size} of ${S.people.length} confirmed` : 'Waiting for people to join'}${offline ? ' · reconnecting…' : ''}</div></span>
-        <button class="link" data-act="share-bill">Invite</button></div>`
-    : S.items.length ? `<div class="banner calm"><span class="grow">Let everyone pick their own items on their phone.</span>
-        <button class="link" data-act="share-bill">Share bill</button></div>` : '';
   const joinCard = isHost || self ? '' : `<div class="card pad join">
       <h2>Who are you?</h2>
       ${S.people.length ? `<div class="recent">${S.people.map((p) => `<button class="chip" data-act="join" data-name="${esc(p.name)}">${esc(p.name)}</button>`).join('')}</div>` : ''}
@@ -297,22 +321,37 @@ function assignView() {
         <button class="link" data-act="filter" data-f="all">Show all items</button></div>`
     : `<div class="card pad none">Nothing picked for ${one ? esc(one.name) : 'them'} yet.
         <button class="link" data-act="filter" data-f="${todo.size ? 'left' : 'all'}">${todo.size ? "Show what's left" : 'Show all items'}</button></div>`;
-  return `${top}${joinCard}${(isHost || self) && S.people.length > 1 ? `<div class="seg" role="group" aria-label="Pick for">
-      <button data-act="mode" data-m="one" aria-pressed="${!S.multi}">${isHost ? 'One person' : 'Self'}</button>
-      <button data-act="mode" data-m="multi" aria-pressed="${S.multi}">Together</button>
-    </div>` : ''}
+  // The rail is the only "who for" control: tap picks one person, holding a name (or, on a guest's
+  // phone, tapping anyone else) picks several together, and Everyone picks the whole table.
+  const canPick = isHost || !!self;
+  const solo = canPick && !S.multi && one;
+  const done = ' <button class="link" data-act="solo">Done</button>';
+  const lead = !isHost ? (!self ? 'Pick your name to start.'
+      : S.multi ? (all ? 'Tap what everyone shared.' : `Tap what you and ${esc(group.filter((p) => p.id !== self.id).map((p) => p.name).join(', '))} shared.`) + done
+      : `Tap everything you had, ${esc(self.name)}.${S.people.length > 1 ? ' Shared something? Tap their name too.' : ''} <button class="link" data-act="not-me">Not ${esc(self.name)}?</button>`)
+    : S.people.length < 2 ? (R ? 'Waiting for people to join. You can also add them yourself.' : S.people.length ? 'Add everyone else splitting this bill.' : 'Add everyone splitting this bill.')
+    : all ? 'Tap what everyone shared.' + done
+    : S.multi ? (group.length <= 3 ? `Tap what ${esc(group.slice(0, -1).map((p) => p.name).join(', '))} and ${esc(group[group.length - 1].name)} shared.`
+      : `Tap what these ${group.length} shared.`) + done
+    : !heldOnce() && one ? `Tap everything ${esc(one.name)} had. Hold another name to pick for both together.` : '';
+  // One line for the whole table, in place of separate banners: start from an equal split, or settle what is left.
+  const bar = !isHost || S.locked || S.people.length < 2 || !S.items.length ? ''
+    : untouched ? `<div class="banner calm"><span class="grow">Shared by the whole table?</span>
+      <button class="link" data-act="all-equal">Split everything equally</button></div>`
+    : left ? `<div class="banner"><span class="grow">${left} item${left > 1 ? 's' : ''} left</span>
+      <button class="link" data-act="rest-all">Split rest between everyone</button></div>` : '';
+  return `${joinCard}
     <div class="rail ${S.multi ? 'multi' : ''}" role="tablist" aria-label="Who are you picking for?" ${S.multi ? 'aria-multiselectable="true"' : ''}>
+      ${canPick && S.people.length > 1 ? `<button role="tab" aria-selected="${all}" data-act="sel" data-p="all">
+        <span class="dot every">All</span><span class="rname">Everyone</span><span class="rtot">together</span></button>` : ''}
       ${S.people.map((p) => `<div class="tile">
-        <button role="tab" aria-selected="${S.sel.includes(p.id)}" ${isHost || S.multi ? `data-act="sel" data-p="${p.id}"` : 'tabindex="-1"'} style="--c:${p.color}"
-          ${marks && !hasPicks(p.id) ? `class="none" aria-description="Nothing picked yet"` : ''}>
+        <button role="tab" aria-selected="${S.sel.includes(p.id)}" ${canPick ? `data-act="sel" data-p="${p.id}"` : 'tabindex="-1"'} style="--c:${p.color}"
+          ${marks && !hasPicks(p.id) ? `class="none" aria-description="Nothing picked yet"` : isHost && solo?.id === p.id ? 'aria-description="Tap again to rename or remove"' : ''}>
           ${av(p)}<span class="rname">${esc(p.name)}</span><span class="rtot">${R && st.ok.has(p.id) ? '✓ ' : ''}${fmt(base[p.id])}</span></button>
         ${S.multi ? `<span class="check" style="--c:${p.color}" aria-hidden="true">${S.sel.includes(p.id) ? '✓' : ''}</span>`
-        : !isHost ? '' : delFor === p.id
-          ? `<button class="edit del" data-act="del-person" data-p="${p.id}" aria-label="Remove ${esc(p.name)}">${TRASH}</button>`
-          : `<button class="edit" data-act="edit-person" data-p="${p.id}" aria-label="Rename ${esc(p.name)}">${PENCIL}</button>`}
+        : isHost && solo?.id === p.id ? `<span class="edit" aria-hidden="true">${PENCIL}</span>` : ''}
       </div>`).join('')}
-      ${S.multi ? `<button role="tab" aria-selected="${all}" data-act="sel" data-p="all">
-        <span class="dot every">All</span><span class="rname">Everyone</span><span class="rtot">select all</span></button>` : ''}
+
       ${isHost ? `<button class="adder" aria-expanded="${open}" data-act="add-person">
         <span class="dot every">+</span><span class="rname">Add</span><span class="rtot">person</span></button>` : ''}
     </div>
@@ -322,21 +361,8 @@ function assignView() {
     </form>
     ${recents.length ? `<div class="recent"><span class="sub">Add again</span>
       ${recents.map((n) => `<button class="chip" data-act="add-recent" data-name="${esc(n)}">+ ${esc(n)}</button>`).join('')}</div>` : ''}` : ''}
-    <p class="lead">${!isHost ? (self && S.multi ? (S.sel.length > 1 ? 'Tap what you and the ticked people shared.' : 'Tick who shared with you, then tap what you shared.')
-      : self ? `Tap everything you had, ${esc(self.name)}. <button class="link" data-act="not-me">Not ${esc(self.name)}?</button>` : 'Pick your name to start.')
-      : S.people.length < 2 ? (R ? 'Waiting for people to join. You can also add them yourself.' : S.people.length ? 'Add everyone else splitting this bill.' : 'Add everyone splitting this bill.')
-      : all ? 'Tap what everyone shared.'
-      : one ? `Tap everything ${esc(one.name)} had.`
-      : group.length <= 3 ? `Tap what ${esc(group.slice(0, -1).map((p) => p.name).join(', '))} and ${esc(group[group.length - 1].name)} shared.`
-      : `Tap what these ${group.length} shared.`}
-</p>
-    ${untouched ? `<div class="banner calm"><span class="grow">Mostly shared by the whole table?</span>
-      <button class="link" data-act="all-equal">Split everything equally</button></div>` : ''}
-    ${left && left < S.items.length ? `<div class="banner ${f === 'left' ? '' : 'two'}"><span class="grow">${left} item${left > 1 ? 's' : ''} not finished yet.</span>
-      ${f === 'left' ? '' : '<button class="link" data-act="show-left">Show them</button>'}
-      <button class="link" data-act="rest-all">Split between everyone</button></div>` : ''}
-    ${!isHost && self && todo.size && f !== 'left' ? `<div class="banner calm"><span class="grow">${todo.size} item${todo.size > 1 ? 's' : ''} nobody has picked yet.</span>
-      <button class="link" data-act="show-left">Show them</button></div>` : ''}
+    ${lead ? `<p class="lead">${lead}</p>` : ''}
+    ${bar}
     ${filterBar}
     ${shown.length ? `<div class="card ${searching ? 'found' : ''}">${shown.map(itemHtml).join('')}</div>` : ''}
     ${empty}
@@ -348,12 +374,14 @@ function assignView() {
       const who = sharers(it), total = cents(it.total);
       const tint = one ? one.color : group.length ? 'var(--accent)' : 'var(--line)';
       const each = (amt, n) => { const e = allocate(amt, Array(n).fill(1)); return `${e[0] !== e[n - 1] ? 'about ' : ''}${fmt(e[n - 1])} each`; };
-      const row = ({ name, sub, warn, badges, amt, on, tick }) => `<button class="row pick" aria-pressed="${on}"
+      // Less common ways to split an item live behind its ⋯ button, not on the row.
+      const more = itemOpts(it).length ? `<button class="more" data-act="item-more" data-id="${it.id}" aria-label="More for ${esc(it.name)}">${DOTS}</button>` : '';
+      const row = ({ name, sub, warn, badges, amt, on, tick }) => `<div class="head"><button class="row pick" aria-pressed="${on}"
           data-act="pick" data-id="${it.id}" ${S.sel.length ? '' : 'disabled'}>
           <span class="tick" aria-hidden="true">${on ? tick || '✓' : ''}</span>
           <span class="grow"><div class="name">${name}</div>${sub ? `<div class="sub ${warn ? 'warn' : ''}">${sub}</div>` : ''}</span>
           <span class="stack">${badges}</span>
-          <span class="amt">${fmt(amt)}</span></button>`;
+          <span class="amt">${fmt(amt)}</span></button>${more}</div>`;
 
       const units = slots(it);
       if (units) {
@@ -368,10 +396,6 @@ function assignView() {
         });
         const summary = [...groups.values()].map(({ w, n }) => `<span class="cnt ${w.length > 1 ? 'grp' : ''}" style="--c:${w[0].color}">${
           w.length > 3 ? `${w.length} people` : esc(w.map((p) => p.name[0].toUpperCase()).join('+'))}${n > 1 ? ` ×${n}` : ''}</span>`).join('');
-        const toggle = big ? `<button class="link" data-act="toggle-slots" data-id="${it.id}">${show ? 'Hide each one' : 'Show each one'}</button>` : '';
-        const tip = it.auto ? (isHost ? 'Shared by everyone · tap to give it to the picked people only' : 'Shared by everyone · tap if only some of you had it') : show && free < it.qty ? 'Tap a filled slot to share it' : '';
-        const asOne = isHost ? `<button class="link" data-act="whole" data-id="${it.id}">Share as one</button>` : '';
-        const hints = [tip, asOne, toggle].filter(Boolean).join(' · ');
         return `<div class="item ${on ? 'on' : ''}" data-item="${it.id}" ${hid(it)} style="--c:${tint}">
           ${row({ name: esc(it.name), amt: total, on, tick: all ? '✓' : String(mine), warn: free > 0,
             sub: `${it.qty} ordered · ${free ? `${free} left` : 'all taken'}`, badges: show ? '' : summary })}
@@ -380,16 +404,13 @@ function assignView() {
             return `<button class="slot ${w.length ? '' : 'free'}" aria-pressed="${all ? isEveryone(sh) : hasPicked(sh)}" data-act="pick" data-id="${it.id}" data-k="${k}"
               aria-label="${w.length ? `One ${esc(it.name)}: ${esc(w.map((p) => p.name).join(', '))}` : `One ${esc(it.name)}, free`}" ${S.sel.length ? '' : 'disabled'}>${
               w.length ? w.map((p) => av(p, 'sm')).join('') : '+'}</button>`;
-          }).join('')}</div>` : ''}
-          ${hints ? `<p class="hint">${hints}</p>` : ''}</div>`;
+          }).join('')}</div>` : ''}</div>`;
       }
 
       const on = !it.auto && (all ? who.length === S.people.length : hasPicked(it.shares));
       const parts = allocate(total, who.map((p) => it.shares[p.id]));
       const sub = [it.qty !== 1 ? `Qty ${it.qty}` : '', who.length < 2 ? '' : !it.uneven ? each(total, who.length) : isHost ? '' : 'Split unevenly'].filter(Boolean).join(' · ');
-      const link = !isHost ? '' : [who.length >= 2 ? `<button class="link" data-act="uneven" data-id="${it.id}">Split unevenly</button>` : '',
-        it.whole && canCount(it) ? `<button class="link" data-act="by-unit" data-id="${it.id}">Split by unit</button>` : ''].filter(Boolean).join(' · ');
-      let extra = link ? `<p class="hint">${link}</p>` : '';
+      let extra = '';
       if (isHost && who.length >= 2 && it.uneven) {
         extra = `<div class="uneven">${who.map((p, k) => `<div class="urow">
             <span class="grow name">${esc(p.name)}</span>
@@ -402,8 +423,7 @@ function assignView() {
       return `<div class="item ${on ? 'on' : ''}" data-item="${it.id}" ${hid(it)} style="--c:${tint}">
         ${row({ name: esc(it.name), amt: total, on, warn: !who.length,
           sub: !who.length ? `${sub ? sub + ' · ' : ''}Nobody yet` : it.auto ? `Everyone · ${sub}` : sub,
-          badges: it.auto ? '<span class="cnt grp">All</span>' : who.map((p) => av(p, 'sm')).join('') })}${
-          it.auto ? `<p class="hint">${isHost ? 'Tap to give it to the picked people only' : 'Tap if only some of you had it'}</p>` : extra}</div>`;
+          badges: it.auto ? '<span class="cnt grp">All</span>' : who.map((p) => av(p, 'sm')).join('') })}${it.auto ? '' : extra}</div>`;
   }
 }
 
@@ -512,7 +532,17 @@ function render() {
   save();
   const isHost = host(), first = isHost ? 0 : 1;
   const mine = S.people.find((p) => p.id === selfId())?.name || myName();
-  $('#meChip').hidden = !mine;
+  // On the host's Split and Result steps the header offers sharing (and how many have confirmed) in place of
+  // the name chip; the host renames themself from their own tile there.
+  const shareTop = $('#shareTop'), sharing = isHost && !S.locked && S.step >= 1 && S.items.length > 0 && !(R && !R.base);
+  shareTop.hidden = !sharing;
+  if (sharing) {
+    const n = R ? status().ok.size : 0;
+    shareTop.innerHTML = `${SHARE}<span>${R ? 'Invite' : 'Share'}</span>${R && S.people.length ? `<b>${offline ? '…' : `${n}/${S.people.length} ✓`}</b>` : ''}`;
+    shareTop.setAttribute('aria-label', !R ? 'Share the bill so everyone picks their own items'
+      : offline ? 'Invite more people · reconnecting' : `Invite more people · ${n} of ${S.people.length} confirmed`);
+  }
+  $('#meChip').hidden = !mine || sharing;
   $('#meChip').innerHTML = `<span>${esc(mine)}</span>${PENCIL}`;
   $('#reset').textContent = R && !isHost ? 'Leave' : 'New bill';
   if (R && !R.base) {             // a shared bill that has not arrived yet
@@ -561,7 +591,7 @@ function render() {
     const st = R && !S.locked && !isHost ? status() : null, x = st?.r.per.find((row) => row.p.id === R.me);
     off = !!x && st.ok.has(x.p.id);
     label = !R || S.locked ? 'Share the split' : isHost ? 'Finalize the split' : off ? 'Confirmed ✓' : `Confirm ${fmt(x.total)}`;
-  } else if (np) label = `Next: ${np.name}`;
+  } else if (np) { const n = unassigned().length; label = `Next: ${np.name} · ${n} item${n > 1 ? 's' : ''} left`; }
   else if (jumpable()) { const n = unassigned().length; label = n > 1 ? `Show the ${n} items left` : 'Show the item left'; }
   else if (block && (S.step > 0 || S.items.length || scanning)) label = block;
   else label = isHost ? ['Next: who had what?', 'See the split'][S.step] : 'Review my share';
@@ -594,7 +624,7 @@ function adopt(d) {
 }
 /* Redraw for a change that came from someone else, but never under a finger or a keyboard. */
 function softRender() {
-  if (pressing || sheet.open || personSheet.open || meSheet.open || ['total', 'cur', 'iSearch'].includes(document.activeElement?.id)) { stale = true; return; }
+  if (pressing || sheet.open || personSheet.open || meSheet.open || optSheet.open || ['total', 'cur', 'iSearch'].includes(document.activeElement?.id)) { stale = true; return; }
   stale = false;
   render();
 }
@@ -602,7 +632,7 @@ const settle = () => setTimeout(() => { if (stale) softRender(); }, 60);
 document.addEventListener('pointerdown', () => { pressing = true; });
 ['pointerup', 'pointercancel'].forEach((ev) => document.addEventListener(ev, () => { pressing = false; settle(); }));
 document.addEventListener('focusout', settle);
-[sheet, personSheet, meSheet].forEach((d) => d.addEventListener('close', settle));
+[sheet, personSheet, meSheet, optSheet].forEach((d) => d.addEventListener('close', settle));
 
 /* Sends this phone's changes, oldest first, one request at a time. Each op has an id, so a request
    that is retried after a dropped connection is never applied twice. */
@@ -892,11 +922,13 @@ const HOST_ONLY = ['scan', 'add-item', 'edit-item', 'delete-item', 'dismiss-note
   'rest-all', 'all-equal', 'whole', 'by-unit', 'uneven', 'inc', 'dec', 'share-bill', 'ok-for', 'unlock'];
 
 document.addEventListener('click', async (e) => {
+  if (held) { held = false; return; }       // the click that ends a hold on a name is not a tap
   const el = e.target.closest('[data-act]');
   if (!el) return;
   const { act: name, id, p } = el.dataset;
   if (!host() && HOST_ONLY.includes(name)) return;
-  if (!['sel', 'del-person', 'edit-person', 'close-sheet'].includes(name)) delFor = null;
+  if (optSheet.open && el.closest('#optSheet')) optSheet.close();
+  if (name === 'sel' && host() && p !== 'all' && (e.shiftKey || e.metaKey || e.ctrlKey)) { hold(p); return; }   // keyboard and mouse stand-in for holding
   const it = S.items.find((i) => i.id === id);
   if (['scan', 'add-item'].includes(name) && !myName()) { if (!takeName()) return; render(); }
   switch (name) {
@@ -908,16 +940,18 @@ document.addEventListener('click', async (e) => {
     case 'dismiss-note': act({ t: 'note' }); break;
     case 'cancel-scan': scanCancelled = true; scanCtl?.abort(); return;
     case 'delete-item': act({ t: 'item-del', id: editingId }); sheet.close(); break;
-    case 'del-person':
-      if (delFor !== p) return;               // only the armed tile's badge removes
-      if (personSheet.open) personSheet.close();
-      removePerson(p);
+    case 'del-person': {                      // from the person sheet
+      const who = S.people.find((x) => x.id === editingPerson);
+      if (!who) return;
+      if (hasPicks(who.id) && !confirm(`Remove ${who.name}? Their picks will be cleared.`)) return;
+      personSheet.close();
+      removePerson(who.id);
       break;
-    case 'edit-person':               // select them, arm delete on their badge, and open rename
-      S.sel = [p]; S.multi = false; delFor = p; adding = false;
-      render();
-      openPerson(p);
-      return;
+    }
+    case 'item-more': openOpts(id); return;
+    case 'solo':                              // leave picking together, back to one person
+      S.sel = host() ? S.sel.slice(0, 1) : [me()?.id].filter(Boolean); S.multi = false;
+      break;
     case 'add-person':
       adding = !adding; render();
       if (adding) $('#pName')?.focus();
@@ -936,10 +970,6 @@ document.addEventListener('click', async (e) => {
     case 'all-equal':
       act({ t: 'all-equal' });
       toast('Everything is shared equally. Now tap what only some people had.');
-      break;
-    case 'mode':                              // One person ↔ Together; leaving Together keeps the first picked
-      S.multi = el.dataset.m === 'multi'; delFor = null; adding = false;
-      if (!S.multi) S.sel = S.sel.slice(0, 1);
       break;
     case 'whole':                             // from the "all taken" toast, whoever ran out of slots joins too
       act({ t: 'whole', id, add: el.closest('#toast') ? S.sel.slice() : [] });
@@ -971,20 +1001,19 @@ document.addEventListener('click', async (e) => {
     case 'not-me': R.me = null; break;
     case 'share-one': shareOut(personText(id)); return;
     case 'image': shareImage(); return;
-    case 'sel':
+    case 'sel': {
       adding = false;
-      if (p === 'all') { S.sel = S.people.map((x) => x.id); S.multi = true; delFor = null; break; }
-      if (!host() && !S.multi) return;        // in Self, a guest's rail is only for looking
-      if (S.multi) {                          // picking several: each tap adds or drops a person, never the last one (or a guest's own name)
-        delFor = null;
-        if (!S.sel.includes(p)) S.sel = [...S.sel, p];
-        else if (S.sel.length > 1 && p !== me()?.id) S.sel = S.sel.filter((x) => x !== p);
-        break;
-      }
-      // Tapping the active person again swaps their rename badge for delete, and back.
-      if (S.sel[0] === p) delFor = delFor === p ? null : p;
-      else { S.sel = [p]; delFor = null; }
+      const mine = host() ? null : me()?.id;
+      if (!host() && !mine) return;
+      if (p === 'all') { S.sel = S.people.map((x) => x.id); S.multi = true; break; }
+      // Picking several: each tap adds or drops a person, never the last one (or a guest's own name).
+      // A guest starts picking with someone just by tapping them; the host holds a name instead.
+      if (S.multi || (mine && p !== mine)) { toggleIn(p, mine); break; }
+      if (mine) return;                       // a guest tapping their own name: already picked
+      if (S.sel[0] === p) { openPerson(p); return; }   // the host taps the picked person again: rename or remove
+      S.sel = [p];
       break;
+    }
     case 'add-recent': addPerson(el.dataset.name); break;
     case 'pick': {
       adding = false;
@@ -1047,7 +1076,6 @@ function addPerson(name) {
 function removePerson(id) {
   const gone = S.people.find((x) => x.id === id);
   act({ t: 'person-del', p: id });
-  delFor = null;
   if (gone) toast(`Removed ${gone.name}`);
 }
 
@@ -1073,16 +1101,7 @@ function openPerson(id) {
   editingPerson = id;
   $('#eName').value = who.name;
   $('#eErr').hidden = true;
-  // A copy of their tile goes inside the sheet's layer, exactly over the real one, so it is
-  // not dimmed with the rest of the page and its delete badge is a real, tappable button.
-  const tile = $(`.rail .edit[data-p="${id}"]`)?.closest('.tile'), lift = $('#lift');
-  lift.hidden = !tile;
-  if (tile) {
-    const r = tile.getBoundingClientRect();
-    lift.innerHTML = tile.outerHTML;
-    lift.querySelector('[role="tab"]').removeAttribute('data-act');   // only the badge acts in the copy
-    Object.assign(lift.style, { left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px` });
-  }
+  $('#eDel').textContent = `Remove ${who.name}`;
   personSheet.showModal();
   $('#eName').focus();
 }
@@ -1147,7 +1166,29 @@ document.addEventListener('change', (e) => {
   } else if (e.target.id === 'cur') { act({ t: 'cur', v: e.target.value }); render(); }
 });
 
-[sheet, personSheet, meSheet].forEach((d) => d.addEventListener('click', (e) => { if (e.target === d) d.close(); }));
+/* Holding a name on the rail (host): pick them together with whoever is already picked. */
+let holdT = null, held = false, holdAt = null;
+function hold(p) {
+  toggleIn(p, null);
+  adding = false;
+  try { localStorage.setItem(HELD, '1'); } catch {}
+  render();
+}
+document.addEventListener('pointerdown', (e) => {
+  held = false;
+  clearTimeout(holdT);
+  const el = e.target.closest('.rail [data-act="sel"]');
+  if (!el || !host() || el.dataset.p === 'all') return;
+  holdAt = [e.clientX, e.clientY];
+  holdT = setTimeout(() => { held = true; navigator.vibrate?.(15); hold(el.dataset.p); }, 450);
+});
+document.addEventListener('pointermove', (e) => {
+  if (holdAt && Math.hypot(e.clientX - holdAt[0], e.clientY - holdAt[1]) > 10) clearTimeout(holdT);   // scrolling the rail
+});
+['pointerup', 'pointercancel'].forEach((t) => document.addEventListener(t, () => { clearTimeout(holdT); holdAt = null; }));
+document.addEventListener('contextmenu', (e) => { if (e.target.closest('.rail')) e.preventDefault(); });
+
+[sheet, personSheet, meSheet, optSheet].forEach((d) => d.addEventListener('click', (e) => { if (e.target === d) d.close(); }));
 
 if (R?.base) rebase();
 render();
