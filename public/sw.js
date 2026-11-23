@@ -1,4 +1,4 @@
-const CACHE = 'splitbill-v22';
+const CACHE = 'splitbill-v23';
 const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'core.js', 'ocr.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
 const OCR_FILES = ['tess/tesseract.min.js', 'tess/worker.min.js', 'tess/tesseract-core-lstm.wasm.js', 'tess/tesseract-core-simd-lstm.wasm.js', 'tess/eng.traineddata.gz'];
 

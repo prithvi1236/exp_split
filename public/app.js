@@ -115,9 +115,12 @@ const isEveryone = (shares) => C.isEveryone(S, shares);
 /* Confirming stores what was agreed to: the person's items and the bill's tax and tip. If either
    changes later, the stored value no longer matches and they are simply asked to confirm again. */
 const sig = (row, r) => `${row.base}:${r.extra}`;
+/* `need` is who still has a share to agree to. On the host's phone that leaves out the host:
+   finalizing is how the host agrees, so "1/2" means one of the other two has confirmed. */
 function status() {
-  const r = compute();
-  return { r, ok: new Set(r.per.filter((x) => x.p.ok === sig(x, r)).map((x) => x.p.id)) };
+  const r = compute(), ok = new Set(r.per.filter((x) => x.p.ok === sig(x, r)).map((x) => x.p.id));
+  const need = r.per.filter((x) => !(host() && x.p.id === selfId())).map((x) => x.p.id);
+  return { r, ok, need, done: need.filter((id) => ok.has(id)).length };
 }
 
 /* ---------- navigation ---------- */
@@ -439,21 +442,22 @@ function nextPerson() {
 }
 
 function resultView() {
-  const { r, ok } = status();
+  const { r, ok, need, done } = status();
+  const asks = (id) => need.includes(id);   // the host's own card has nothing to confirm
   const room = !R ? '' : S.locked
     ? `<div class="banner calm"><span class="grow"><b>Final.</b> Nobody can change the split now.</span><button class="link" data-act="unlock">Reopen</button></div>`
-    : `<p class="lead">${ok.size} of ${r.per.length} confirmed${offline ? ' · reconnecting…' : ''}. Finalize when you are happy with it.</p>`;
+    : `<p class="lead">${done} of ${need.length} confirmed${offline ? ' · reconnecting…' : ''}. Finalize when you are happy with it.</p>`;
   return `${room}<div class="grand"><div class="muted small">Bill total</div><div class="big">${fmt(r.total)}</div>
       <div class="check">✓ Shares add up to ${fmt(r.per.reduce((a, x) => a + x.total, 0))}</div></div>
     ${r.per.map(({ p, total, lines, extra }) => `<details class="card" data-p="${p.id}">
       <summary class="row">${av(p)}
-        <span class="grow"><div class="name">${esc(p.name)}</div><div class="sub">${lines.length} item${lines.length === 1 ? '' : 's'}${!R ? '' : ok.has(p.id) ? ' · confirmed ✓' : S.locked ? '' : ' · not confirmed yet'}</div></span>
+        <span class="grow"><div class="name">${esc(p.name)}</div><div class="sub">${lines.length} item${lines.length === 1 ? '' : 's'}${!R || !asks(p.id) ? '' : ok.has(p.id) ? ' · confirmed ✓' : S.locked ? '' : ' · not confirmed yet'}</div></span>
         <span class="owes">${fmt(total)}</span><span class="chev">›</span></summary>
       <div class="lines">
         ${lines.map((l) => `<div><span>${esc(l.name)}${l.frac ? ` <span class="muted">(${l.frac})</span>` : ''}</span><span>${fmt(l.amt)}</span></div>`).join('') || '<div class="muted">Nothing</div>'}
         ${extra ? `<div class="muted"><span>${extra > 0 ? 'Tax / tip share' : 'Discount share'}</span><span>${fmt(extra)}</span></div>` : ''}
       </div>
-      ${R && !S.locked && !ok.has(p.id) ? `<button class="row add" data-act="ok-for" data-p="${p.id}">Confirm for ${esc(p.name)}</button>` : ''}
+      ${R && !S.locked && asks(p.id) && !ok.has(p.id) ? `<button class="row add" data-act="ok-for" data-p="${p.id}">Confirm for ${esc(p.name)}</button>` : ''}
       <button class="row add" data-act="share-one" data-id="${p.id}">Send ${esc(p.name)} their share</button></details>`).join('')}
     <div class="pair">
       <button class="btn ghost" data-act="image">Share as image</button>
@@ -537,10 +541,10 @@ function render() {
   const shareTop = $('#shareTop'), sharing = isHost && !S.locked && S.step >= 1 && S.items.length > 0 && !(R && !R.base);
   shareTop.hidden = !sharing;
   if (sharing) {
-    const n = R ? status().ok.size : 0;
-    shareTop.innerHTML = `${SHARE}<span>${R ? 'Invite' : 'Share'}</span>${R && S.people.length ? `<b>${offline ? '…' : `${n}/${S.people.length} ✓`}</b>` : ''}`;
+    const { done: n, need } = R ? status() : { done: 0, need: [] };
+    shareTop.innerHTML = `${SHARE}<span>${R ? 'Invite' : 'Share'}</span>${R && need.length ? `<b>${offline ? '…' : `${n}/${need.length} ✓`}</b>` : ''}`;
     shareTop.setAttribute('aria-label', !R ? 'Share the bill so everyone picks their own items'
-      : offline ? 'Invite more people · reconnecting' : `Invite more people · ${n} of ${S.people.length} confirmed`);
+      : offline ? 'Invite more people · reconnecting' : `Invite more people · ${n} of ${need.length} confirmed`);
   }
   $('#meChip').hidden = !mine || sharing;
   $('#meChip').innerHTML = `<span>${esc(mine)}</span>${PENCIL}`;
@@ -988,7 +992,7 @@ document.addEventListener('click', async (e) => {
       if (S.step < 2) return go(S.step + 1);
       if (!R || S.locked) { shareOut(shareText()); return; }
       if (host()) {                           // finalize: from here nobody can change the split
-        const { r, ok } = status(), waiting = r.per.filter((x) => !ok.has(x.p.id)).map((x) => x.p.name);
+        const { r, ok, need } = status(), waiting = r.per.filter((x) => need.includes(x.p.id) && !ok.has(x.p.id)).map((x) => x.p.name);
         if (waiting.length && !confirm(`${waiting.join(', ')} ${waiting.length > 1 ? 'have' : 'has'} not confirmed yet. Finalize anyway?`)) return;
         act({ t: 'lock', on: true });
         toast('Final. Everyone can see their share now.');
