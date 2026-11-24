@@ -92,6 +92,11 @@
     <div id="opts" class="opts"></div>
   </dialog>
 
+  <!-- Quick round: what is left, one card at a time -->
+  <dialog id="roundSheet" class="sheet">
+    <div id="round" class="round"></div>
+  </dialog>
+
   <!-- The name this phone's owner goes by on every bill -->
   <dialog id="meSheet" class="sheet">
     <form id="meEdit" method="dialog" novalidate>
@@ -126,6 +131,8 @@
   </dialog>
 
   <div id="toast" class="toast" role="status" hidden></div>
+  <!-- What other people in a shared bill just did -->
+  <div id="live" class="live-feed" aria-live="polite"></div>
   <input id="file" type="file" accept="image/*" hidden>
 
   <script type="module" src="app.js"></script>

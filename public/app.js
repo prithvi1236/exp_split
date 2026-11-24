@@ -245,6 +245,161 @@ function applySearch() {
 }
 function closeSearch() { searching = false; query = ''; }
 
+/* ---------- bill meter ----------
+   How much of the bill has someone, drawn as the bottom edge of the people row in each person's
+   colour, plus one quiet line with the shortcuts for what is left. */
+function meterBar(r) {
+  const sub = subtotal();
+  if (S.people.length < 2 || !S.items.length || S.locked || sub <= 0) return '';
+  let at = 0;
+  const stops = r.per.filter((x) => x.base > 0).map((x) => {
+    const from = at; at = Math.min(100, at + (x.base / sub) * 100);
+    return `${x.p.color} ${from.toFixed(2)}% ${at.toFixed(2)}%`;
+  });
+  return `--meter:linear-gradient(to right, ${[...stops, `var(--line) ${at.toFixed(2)}% 100%`].join(', ')})`;
+}
+function leftLine(r, isHost, self, untouched) {
+  const n = unassigned().length;
+  if (S.people.length < 2 || !n || S.locked || scanning || (!isHost && !self)) return '';
+  const open = subtotal() - r.per.reduce((a, x) => a + x.base, 0);
+  const inButton = isHost && !nextPerson() && jumpable();     // the main button already starts the round
+  return `<div class="leftline"><span class="grow">${isHost ? `<b>${fmt(open)}</b> unclaimed` : `${n} item${n > 1 ? 's' : ''} nobody has yet`}</span>
+      ${inButton ? '' : `<button class="link" data-act="round">${isHost ? '⚡ Quick round' : 'Help finish'}</button>`}
+      ${isHost && !untouched ? '<button class="link" data-act="rest-all">Share the rest</button>' : ''}</div>`;
+}
+
+/* ---------- quick round ----------
+   What is left, one big card at a time. The host says who had it; a guest says "Mine" or "Not mine". Skipped cards come back at the end. */
+const roundSheet = $('#roundSheet');
+let round = null;                 // { skip, n0, t0, cur, sel, busy, msg }
+const calm = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+function roundQueue() {
+  return unassigned().filter((it) => !round.skip.has(it.id));
+}
+function openRound() {
+  round = { skip: new Set(), t0: Date.now(), cur: null, sel: [], busy: false, msg: '' };
+  round.n0 = roundQueue().length;
+  if (!round.n0) { round = null; return; }
+  drawRound();
+  roundSheet.showModal();
+}
+function confetti() {
+  const cols = S.people.map((p) => p.color);
+  return `<div class="confetti" aria-hidden="true">${Array.from({ length: 18 }, (_, i) =>
+    `<i style="--x:${(i * 37) % 100}%;--d:${(i % 6) * 0.07}s;--r:${(i * 53) % 360}deg;--c:${cols[i % cols.length]}"></i>`).join('')}</div>`;
+}
+function drawRound() {
+  if (!round) return;
+  const box = $('#round'), isHost = host(), q = roundQueue(), it = q[0];
+  const n0 = Math.max(round.n0, q.length), done = n0 - q.length;
+  const head = (title) => `<div class="rhead"><b class="grow">${title}</b>${it ? `<span class="muted small">${done + 1} of ${n0}</span>` : ''}
+      <button class="x" data-act="close-sheet" aria-label="Close">×</button></div>
+    <div class="rbar"><span style="width:${n0 ? (done / n0) * 100 : 100}%"></span></div>`;
+  if (!it) {
+    const left = unassigned(), skipped = left.filter((i) => round.skip.has(i.id)).length;
+    const secs = Math.round((Date.now() - round.t0) / 1000), took = secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m ${secs % 60}s`;
+    let body;
+    if (!left.length) {
+      body = `${confetti()}<div class="rend"><div class="big">🎉</div><h2>Every item has someone</h2>
+        <p class="muted">${done} item${done === 1 ? '' : 's'} sorted in ${took}.</p></div>
+        <div class="sheet-actions"><button class="btn primary block" data-act="r-finish">${isHost ? 'See the split' : 'Review my share'}</button></div>`;
+    } else if (!isHost) {
+      body = `<div class="rend"><div class="big">👍</div><h2>That's all from you</h2>
+        <p class="muted">${left.length} item${left.length > 1 ? 's' : ''} still need someone. ${esc(hostName() || 'The host')} can sort ${left.length > 1 ? 'them' : 'it'} out.</p></div>
+        <div class="sheet-actions"><button class="btn ghost" data-act="r-again">Look again</button><button class="btn primary" data-act="close-sheet">Done</button></div>`;
+    } else {
+      body = `<div class="rend"><div class="big">🤔</div><h2>${skipped} skipped</h2>
+        <p class="muted">Go through ${skipped > 1 ? 'them' : 'it'} once more, or share ${skipped > 1 ? 'them' : 'it'} between everyone.</p></div>
+        <div class="sheet-actions"><button class="btn ghost" data-act="r-again">Go again</button><button class="btn primary" data-act="r-everyone-rest">Everyone shares ${skipped > 1 ? 'them' : 'it'}</button></div>`;
+    }
+    box.innerHTML = head('Quick round') + body;
+    return;
+  }
+  const isNew = round.cur !== it.id;
+  if (isNew) { round.cur = it.id; round.sel = []; }
+  const units = slots(it), free = units ? units.filter((sh) => !sharersOf(sh).length).length : 0;
+  const who = [...new Set(units ? units.flatMap((sh) => sharersOf(sh)) : sharers(it))];
+  const facts = [units ? `${it.qty} ordered · ${free} left` : it.qty !== 1 ? `Qty ${it.qty}` : '', who.length ? `${esc(who.map((p) => p.name).join(', '))} had some` : ''].filter(Boolean).join(' · ');
+  const card = `<div class="rcard ${isNew ? 'in' : ''}" style="--c:${round.sel.length === 1 ? S.people.find((p) => p.id === round.sel[0])?.color : 'var(--accent)'}">
+      <div class="rkind" aria-hidden="true">🧾</div>
+      <div class="rname">${esc(it.name)}</div>
+      <div class="ramt">${fmt(cents(it.total))}</div>
+      ${facts ? `<div class="muted small">${facts}</div>` : ''}
+    </div>
+    <p class="rmsg" role="status">${round.msg}</p>`;
+  let controls;
+  if (isHost) {
+    const all = round.sel.length === S.people.length;
+    const label = !round.sel.length ? 'Tap who had it'
+      : all ? 'Everyone shares it'
+      : round.sel.length === 1 ? `Give to ${esc(S.people.find((p) => p.id === round.sel[0]).name)}`
+      : `Split between ${round.sel.length}`;
+    controls = `<p class="rq">${units && who.length ? `Who had the other ${free}?` : 'Who had it?'}</p>
+      <div class="rpeople">
+        <button class="chip" data-act="r-sel" data-p="all" aria-pressed="${all}">Everyone</button>
+        ${S.people.map((p) => `<button class="chip" data-act="r-sel" data-p="${p.id}" style="--c:${p.color}" aria-pressed="${round.sel.includes(p.id)}">${esc(p.name)}</button>`).join('')}
+      </div>
+      <div class="sheet-actions"><button class="btn ghost" data-act="r-skip">Skip</button>
+        <button class="btn primary rgo" data-act="r-give" ${round.sel.length ? '' : 'disabled'}>${label}</button></div>`;
+  } else {
+    controls = `<p class="rq">Did you have ${units ? 'one of these' : 'this'}?</p>
+      <div class="sheet-actions"><button class="btn ghost rgo" data-act="r-skip">Not mine</button>
+        <button class="btn primary rgo" data-act="r-mine">${units ? 'One is mine' : 'Mine'}</button></div>`;
+  }
+  box.innerHTML = head('Quick round') + card + controls;
+}
+/* The card flies off (right when given, left when skipped) and the next one comes in. */
+function nextCard(msg, dir = 'r') {
+  round.msg = msg; round.busy = true;
+  $('#round .rcard')?.classList.add(dir === 'l' ? 'flyl' : 'fly');
+  render();
+  setTimeout(() => { if (!round) return; round.busy = false; drawRound(); }, calm() ? 0 : 220);
+}
+/* Hand every unit nobody has yet, or the whole item, to these people. Units someone already has stay theirs. */
+function giveTo(it, sel) {
+  const units = slots(it), n = units ? units.filter((sh) => !sharersOf(sh).length).length : 1;
+  for (let k = 0; k < n; k++) act({ t: 'pick', id: it.id, k: null, sel: sel.slice(), all: false, on: true, free: false });
+}
+function roundAct(name, el) {
+  const q = roundQueue(), it = q[0];
+  switch (name) {
+    case 'r-sel': {
+      const p = el.dataset.p;
+      if (p === 'all') round.sel = round.sel.length === S.people.length ? [] : S.people.map((x) => x.id);
+      else round.sel = round.sel.includes(p) ? round.sel.filter((x) => x !== p) : S.people.filter((x) => x.id === p || round.sel.includes(x.id)).map((x) => x.id);
+      round.msg = '';
+      return drawRound();
+    }
+    case 'r-give': {
+      if (!it || !round.sel.length) return;
+      const names = round.sel.length === S.people.length ? 'everyone' : S.people.filter((p) => round.sel.includes(p.id)).map((p) => p.name).join(', ');
+      giveTo(it, round.sel);
+      return nextCard(`✓ ${esc(it.name)} → ${esc(names)}`);
+    }
+    case 'r-skip':
+      if (!it) return;
+      round.skip.add(it.id);
+      return nextCard('', 'l');
+    case 'r-mine': {
+      const mine = me()?.id;
+      if (!it || !mine) return;
+      const op = { t: 'pick', id: it.id, k: null, sel: [mine], all: false, on: true, free: false }, out = act(op);
+      if (out.miss === 'full') { toldFull.add(op.o); toast('Someone just took the last one.'); }
+      if (!slots(it) || C.finished(S, it)) return nextCard(`✓ ${esc(it.name)} is yours`);
+      round.skip.add(it.id);                  // one unit taken and more are free: on to the next, it comes back in "Look again"
+      return nextCard(`✓ One ${esc(it.name)} is yours`);
+    }
+    case 'r-again': round.skip.clear(); round.n0 = roundQueue().length; round.t0 = Date.now(); round.msg = ''; return drawRound();
+    case 'r-everyone-rest':
+      unassigned().forEach((x) => giveTo(x, S.people.map((p) => p.id)));
+      round.skip.clear(); round.msg = '';
+      render();
+      return drawRound();
+    case 'r-finish': roundSheet.close(); go(2); return;
+  }
+}
+roundSheet.addEventListener('close', () => { round = null; render(); });
+
 const PENCIL = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>';
 const DOTS = '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>';
 const SHARE = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v13"/><path d="m7 8 5-5 5 5"/><path d="M5 14v6h14v-6"/></svg>';
@@ -309,7 +464,7 @@ const HELP = {
       'Shared something? Tap it for each person, or <b>hold</b> a second name to pick for several at once. <b>Everyone</b> picks the whole table.',
       'Items with a count, like 3 lassis, show one slot each. Tap a free slot to take one, or a filled slot to share it.',
       '<b>⋯</b> on an item: split it unevenly, share it as one, or split it by unit.',
-      '<b>Left</b> shows items nobody has yet. <b>Split rest between everyone</b> finishes them in one go.',
+      'The line under the names fills with each person\'s colour as items get picked. <b>Quick round</b> shows what is left one card at a time. <b>Share the rest</b> splits what is left between everyone.',
       '<b>Share</b> at the top lets everyone pick their own items on their phone. Tap a picked name again to rename or remove them.']],
     ['The split', [
       'Each share includes that person\'s part of tax and tip. Tap a person to see their items.',
@@ -323,7 +478,7 @@ const HELP = {
       'Pick your name, then tap everything you had.',
       'Shared something? Tap the other person\'s name too, then tap the item. <b>Done</b> goes back to just you.',
       'Items with a count show one slot each. Tap a free slot to take one, or a filled slot to share it.',
-      '<b>Left</b> shows items nobody has picked yet. One of them might be yours.']],
+      '<b>Left</b> shows items nobody has picked yet. <b>Help finish</b> shows them one at a time: tap <b>Mine</b> or <b>Not mine</b>.']],
     ['Your share', [
       'Check your items, then confirm your share.',
       'If your items or the tax change later, you will be asked to confirm again.',
@@ -363,7 +518,6 @@ function assignView() {
   const all = pickedAll(), one = group.length === 1 ? group[0] : null;
   const untouched = isHost && S.people.length > 1 && S.items.length > 0 && S.items.every((i) => pieces(i).every((pc) => !sharersOf(pc.shares).length));
   const open = isHost && (adding || S.people.length < 2);
-  const left = isHost ? unassigned().length : 0;      // only the host may split what is left between everyone
   const st = status(), base = Object.fromEntries(st.r.per.map((r) => [r.p.id, r.base]));
   const saved = myName();
   const joinCard = isHost || self ? '' : `<div class="card pad join">
@@ -429,14 +583,13 @@ function assignView() {
   // Otherwise, picking for one person, the host sees the next thing worth learning, if any.
   const tip = isHost && !lead && one && !S.locked && S.items.length ? hostTip(one) : null;
   tipNow = tip?.[0] || null;
-  // One line for the whole table, in place of separate banners: start from an equal split, or settle what is left.
-  const bar = !isHost || S.locked || S.people.length < 2 || !S.items.length ? ''
-    : untouched ? `<div class="banner calm"><span class="grow">Shared by the whole table?</span>
-      <button class="link" data-act="all-equal">Split everything equally</button></div>`
-    : left ? `<div class="banner"><span class="grow">${left} item${left > 1 ? 's' : ''} left</span>
-      <button class="link" data-act="rest-all">Split rest between everyone</button></div>` : '';
+  // An untouched bill can start from an equal split. Once picking has begun, the meter shows what is left.
+  const bar = !isHost || S.locked || S.people.length < 2 || !S.items.length || !untouched ? ''
+    : `<div class="banner calm"><span class="grow">Shared by the whole table?</span>
+      <button class="link" data-act="all-equal">Split everything equally</button></div>`;
+  const meter = searching ? '' : leftLine(st.r, isHost, self, untouched), bar0 = meterBar(st.r);
   return `${joinCard}
-    <div class="rail ${S.multi ? 'multi' : ''}" role="tablist" aria-label="Who are you picking for?" ${S.multi ? 'aria-multiselectable="true"' : ''}>
+    <div class="rail ${S.multi ? 'multi' : ''} ${bar0 ? 'metered' : ''}" ${bar0 ? `style="${bar0}"` : ''} role="tablist" aria-label="Who are you picking for?" ${S.multi ? 'aria-multiselectable="true"' : ''}>
       ${canPick && S.people.length > 1 ? `<button role="tab" aria-selected="${all}" data-act="sel" data-p="all">
         <span class="dot every">All</span><span class="rname">Everyone</span><span class="rtot">together</span></button>` : ''}
       ${S.people.map((p) => `<div class="tile">
@@ -460,6 +613,7 @@ function assignView() {
     ${tip ? `<div class="tip" data-tip="${tip[0]}"><span class="grow">${tip[1]}</span>
       <button class="x" data-act="tip-off" data-tip="${tip[0]}" aria-label="Hide this tip">×</button></div>` : ''}
     ${bar}
+    ${meter}
     ${filterBar}
     ${shown.length ? `<div class="card ${searching ? 'found' : ''}">${shown.map(itemHtml).join('')}</div>` : ''}
     ${empty}
@@ -681,6 +835,7 @@ function render() {
   }
   typed.forEach(({ id, v, focus }) => { const el = document.getElementById(id); if (el && (v || focus)) { el.value = v; if (focus) el.focus(); } });
   view.querySelectorAll('details[data-p]').forEach((d) => { d.open = openCards.includes(d.dataset.p); });
+  if (roundSheet.open && round && !round.busy) drawRound();       // someone else's picks can finish the card on screen
   if (rail) view.style.setProperty('--rail-h', `${rail.offsetHeight}px`);   // the open search pins just under the rail
   if (!S.items.length) { searchable = false; closeSearch(); }
   else if (!searchable && S.step === 1) {
@@ -688,6 +843,7 @@ function render() {
     const avg = rows.length ? rows.reduce((a, el) => a + el.offsetHeight, 0) / rows.length : 0;
     if (avg * S.items.length > view.clientHeight - (rail?.offsetHeight || 0)) { searchable = true; render(); return; }
   }
+  flashPings();
   $('#scanStrip').hidden = !scanning;
   scanTick();
   backBtn.hidden = S.step === first || S.locked;
@@ -700,7 +856,7 @@ function render() {
     off = !!x && st.ok.has(x.p.id);
     label = !R || S.locked ? 'Share the split' : isHost ? 'Finalize the split' : off ? 'Confirmed ✓' : `Confirm ${fmt(x.total)}`;
   } else if (np) { const n = unassigned().length; label = `Next: ${np.name} · ${n} item${n > 1 ? 's' : ''} left`; }
-  else if (jumpable()) { const n = unassigned().length; label = n > 1 ? `Show the ${n} items left` : 'Show the item left'; }
+  else if (jumpable()) { const n = unassigned().length; label = `⚡ Quick round · ${n} left`; }
   else if (block && (S.step > 0 || S.items.length || scanning)) label = block;
   else label = isHost ? ['Next: who had what?', 'See the split'][S.step] : 'Review my share';
   nextBtn.disabled = off;
@@ -723,13 +879,78 @@ function rebase() {
 }
 function adopt(d) {
   if (!R || d.ver < R.ver) return;                  // an older answer that arrived late
+  const before = R.base ? snapshot() : null;        // nothing to compare with on the first answer
   R.base = d.doc; R.ver = d.ver;
   if (d.me) R.me = d.me;
   rebase();
+  if (before) liveNotes(before, snapshot());
   // Only a unit that looked free on this phone and was gone on the server is news.
   if (d.missed?.filter((m) => m.why === 'full' && !toldFull.delete(m.o)).length) toast('Someone just took the last one. Tap a slot to share it.');
   softRender();
 }
+/* ---------- live activity ----------
+   When the server's bill arrives, it is compared with what this phone showed. This phone's own
+   changes are already on screen (they were applied when tapped), so anything new came from someone
+   else: a short note says who did what, and the items and people it touched flash in their colour. */
+const pings = new Map();          // item id or 'p:'+person id → colour, flashed on the next redraw
+function snapshot() {
+  const claims = {};
+  S.items.forEach((it) => {
+    if (it.auto) return;          // the untouched table split is nobody's pick
+    const c = {};
+    (slots(it) || [it.shares]).forEach((sh) => sharersOf(sh).forEach((p) => { c[p.id] = (c[p.id] || 0) + 1; }));
+    claims[it.id] = c;
+  });
+  return { claims, people: new Set(S.people.map((p) => p.id)), ok: status().ok, locked: S.locked };
+}
+function liveNotes(a, b) {
+  const notes = [], self = selfId(), who = (id) => S.people.find((p) => p.id === id);
+  // Newcomers first, then what each person picked or put back, then confirmations.
+  S.people.forEach((p) => { if (!a.people.has(p.id) && p.id !== self) { notes.push([p, `${p.name} joined the bill`]); pings.set('p:' + p.id, p.color); } });
+  const moves = new Map();        // person id → { got: [[item, n, shared]], back: [item] }
+  S.items.forEach((it) => {
+    const was = a.claims[it.id] || {}, now = b.claims[it.id] || {};
+    new Set([...Object.keys(was), ...Object.keys(now)]).forEach((id) => {
+      const d = (now[id] || 0) - (was[id] || 0);
+      if (!d || !who(id)) return;
+      const m = moves.get(id) || { got: [], back: [] };
+      if (d > 0) m.got.push([it, d, Object.keys(now).some((x) => x !== id)]); else m.back.push(it);
+      moves.set(id, m);
+      if (d > 0 && !pings.has(it.id)) pings.set(it.id, who(id).color);
+    });
+  });
+  moves.forEach(({ got, back }, id) => {
+    const p = who(id), me = id === self;
+    if (got.length) pings.set('p:' + id, p.color);
+    if (got.length > 2) notes.push([p, me ? `You're on ${got.length} more items` : `${p.name} picked ${got.length} items`]);
+    else got.forEach(([it, n, shared]) => notes.push([p, me ? `You're on ${it.name}`
+      : slots(it) ? `${p.name} took ${n > 1 ? n : 'one'} ${it.name}` : shared ? `${p.name} is sharing ${it.name}` : `${p.name} took ${it.name}`]));
+    if (back.length > 2) notes.push([p, me ? `You're off ${back.length} items` : `${p.name} put back ${back.length} items`]);
+    else back.forEach((it) => notes.push([p, me ? `You're off ${it.name}` : `${p.name} put back ${it.name}`]));
+  });
+  b.ok.forEach((id) => { if (!a.ok.has(id) && id !== self && who(id)) notes.push([who(id), `${who(id).name} confirmed ✓`]); });
+  if (b.locked && !a.locked && !host()) notes.push([who(hostId()) || null, `${hostName() || 'The host'} finalized the split`]);
+  if (notes.length) note(notes[0][0], notes[0][1] + (notes.length > 1 ? ` · +${notes.length - 1} more` : ''));
+}
+/* One note at a time, just above the bottom bar; a newer one replaces it. A toast (an error, or
+   something this phone did) is more important, so no note shows while one is up. */
+let noteT;
+function note(p, text) {
+  if (!$('#toast').hidden) return;
+  const feed = $('#live');
+  feed.innerHTML = `<div class="note">${p ? av(p, 'sm') : ''}<span>${esc(text)}</span></div>`;
+  clearTimeout(noteT);
+  noteT = setTimeout(() => { feed.firstElementChild?.classList.add('out'); noteT = setTimeout(() => { feed.innerHTML = ''; }, 300); }, 3500);
+}
+/* Flash what the last notes were about, once, on the redraw that shows it. */
+function flashPings() {
+  pings.forEach((c, key) => {
+    const el = key.startsWith('p:') ? $(`.rail [data-p="${key.slice(2)}"]`) : view.querySelector(`[data-item="${key}"]`);
+    if (el) { el.style.setProperty('--pc', c); el.classList.add('ping'); }
+  });
+  pings.clear();
+}
+
 /* Redraw for a change that came from someone else, but never under a finger or a keyboard. */
 function softRender() {
   if (pressing || sheet.open || personSheet.open || meSheet.open || optSheet.open || helpSheet.open || upiSheet.open || ['total', 'cur', 'iSearch'].includes(document.activeElement?.id)) { stale = true; return; }
@@ -1028,7 +1249,8 @@ async function copy(text) {
 
 /* ---------- events ---------- */
 const HOST_ONLY = ['scan', 'add-item', 'edit-item', 'delete-item', 'dismiss-note', 'del-person', 'edit-person', 'add-person', 'add-recent',
-  'rest-all', 'all-equal', 'whole', 'by-unit', 'uneven', 'inc', 'dec', 'share-bill', 'ok-for', 'unlock', 'edit-upi', 'del-upi'];
+  'rest-all', 'all-equal', 'whole', 'by-unit', 'uneven', 'inc', 'dec', 'share-bill', 'ok-for', 'unlock', 'edit-upi', 'del-upi',
+  'r-sel', 'r-give', 'r-everyone-rest'];
 
 document.addEventListener('click', async (e) => {
   if (held) { held = false; return; }       // the click that ends a hold on a name is not a tap
@@ -1039,7 +1261,9 @@ document.addEventListener('click', async (e) => {
   if (optSheet.open && el.closest('#optSheet')) optSheet.close();  if (name === 'sel' && host() && p !== 'all' && (e.shiftKey || e.metaKey || e.ctrlKey)) { hold(p); return; }   // keyboard and mouse stand-in for holding
   const it = S.items.find((i) => i.id === id);
   if (['scan', 'add-item'].includes(name) && !myName()) { if (!takeName()) return; render(); }
+  if (name.startsWith('r-') && round) { roundAct(name, el); return; }
   switch (name) {
+    case 'round': openRound(); return;
     case 'edit-me': openMe(); return;
     case 'scan': if (scanning) { toast('Still reading the last bill'); return; } $('#file').click(); return;
     case 'add-item': openSheet(); return;
@@ -1095,7 +1319,7 @@ document.addEventListener('click', async (e) => {
     case 'back': go(S.step - 1); return;
     case 'next':
       if (nextPerson()) { S.sel = [nextPerson().id]; view.scrollTop = 0; break; }
-      if (jumpable()) { showLeft(); return; }
+      if (jumpable()) { openRound(); return; }
       if (S.step < 2) return go(S.step + 1);
       if (!R || S.locked) { shareOut(shareText()); return; }
       if (host()) {                           // finalize: from here nobody can change the split
@@ -1321,7 +1545,7 @@ document.addEventListener('pointermove', (e) => {
 ['pointerup', 'pointercancel'].forEach((t) => document.addEventListener(t, () => { clearTimeout(holdT); holdAt = null; }));
 document.addEventListener('contextmenu', (e) => { if (e.target.closest('.rail')) e.preventDefault(); });
 
-[sheet, personSheet, meSheet, optSheet, helpSheet, upiSheet].forEach((d) => d.addEventListener('click', (e) => { if (e.target === d) d.close(); }));
+[sheet, personSheet, meSheet, optSheet, helpSheet, upiSheet, roundSheet].forEach((d) => d.addEventListener('click', (e) => { if (e.target === d) d.close(); }));
 
 if (R?.base) rebase();
 render();

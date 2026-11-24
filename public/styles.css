@@ -411,3 +411,80 @@ a.btn { text-decoration: none; }
 .center { text-align: center; }
 p.center { margin: 4px 0 14px; }
 .row.upi-add { width: 100%; margin-bottom: 12px; border: 1px dashed var(--line); border-radius: var(--radius); }
+
+/* Bill meter: the people row's bottom edge fills in each person's colour */
+.rail.metered {
+  border-bottom: 0; padding-bottom: 13px;
+  background: var(--meter) left bottom / 100% 4px no-repeat, var(--bg);
+}
+.leftline { display: flex; align-items: center; gap: 14px; margin: -2px 0 8px; font-size: 13px; color: var(--muted); }
+.leftline b { color: var(--text); font-variant-numeric: tabular-nums; }
+.leftline .grow { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.leftline .link { font-size: 13px; padding: 4px 0; white-space: nowrap; }
+
+/* Quick round: one card at a time */
+.round { position: relative; overflow: hidden; padding: 16px 16px calc(16px + env(safe-area-inset-bottom)); display: grid; gap: 12px; }
+.rhead { display: flex; align-items: center; gap: 10px; }
+.rhead b { font-size: 17px; }
+.rhead .x { margin-right: -8px; }
+.rbar { height: 4px; border-radius: 999px; background: var(--line); overflow: hidden; margin-top: -6px; }
+.rbar span { display: block; height: 100%; background: var(--accent); transition: width .3s ease-out; }
+.rcard {
+  text-align: center; padding: 22px 16px 18px; border-radius: 18px;
+  border: 1.5px solid color-mix(in srgb, var(--c) 40%, var(--line));
+  background: color-mix(in srgb, var(--c) 7%, var(--card));
+}
+.rcard .rkind { font-size: 34px; line-height: 1; margin-bottom: 8px; }
+.rcard .rname { font-size: 20px; font-weight: 700; overflow-wrap: anywhere; }
+.rcard .ramt { font-size: 26px; font-weight: 750; font-variant-numeric: tabular-nums; margin: 2px 0 4px; }
+.rcard.in { animation: cardin .22s ease-out; }
+.rcard.fly { animation: flyr .22s ease-in forwards; }
+.rcard.flyl { animation: flyl .22s ease-in forwards; }
+@keyframes cardin { from { opacity: 0; transform: translateY(10px) scale(.97); } }
+@keyframes flyr { to { opacity: 0; transform: translateX(60%) rotate(8deg); } }
+@keyframes flyl { to { opacity: 0; transform: translateX(-60%) rotate(-8deg); } }
+.rmsg { min-height: 18px; margin-top: -4px; text-align: center; font-size: 13px; font-weight: 600; color: var(--accent); }
+.rq { font-size: 14px; font-weight: 600; color: var(--muted); }
+.rpeople { display: flex; flex-wrap: wrap; gap: 8px; }
+.round .sheet-actions .rgo, .round .sheet-actions .primary { flex: 1; }
+.rend { text-align: center; padding: 10px 0 4px; display: grid; gap: 6px; }
+.rend .big { font-size: 46px; line-height: 1; animation: cheer .6s ease-out; }
+@keyframes cheer { 30% { transform: scale(1.12); } 100% { transform: none; } }
+.rend h2 { font-size: 20px; }
+.confetti { position: absolute; inset: 0; pointer-events: none; }
+.confetti i {
+  position: absolute; top: -12px; left: var(--x); width: 8px; height: 12px; border-radius: 2px;
+  background: var(--c); transform: rotate(var(--r)); animation: fall 1.3s ease-in var(--d) forwards;
+}
+@keyframes fall { to { transform: translateY(320px) rotate(calc(var(--r) + 300deg)); opacity: 0; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .rbar span { transition: none; }
+  .rcard.in, .rcard.fly, .rcard.flyl, .rend .big { animation: none; }
+  .confetti { display: none; }
+}
+
+/* Live activity on a shared bill: who just did what, and a flash on what it touched */
+.live-feed {
+  position: fixed; bottom: calc(84px + env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%); z-index: 19;
+  max-width: calc(100% - 32px); pointer-events: none;
+}
+.live-feed .note {
+  display: flex; align-items: center; gap: 8px; padding: 6px 14px 6px 6px; border-radius: 999px;
+  background: var(--card); border: 1px solid var(--line); box-shadow: 0 4px 14px rgb(0 0 0 / .14);
+  font-size: 13px; font-weight: 600; animation: notein .25s ease-out;
+  transition: opacity .3s, transform .3s;
+}
+.live-feed .note:not(:has(.dot)) { padding-left: 14px; }
+.live-feed .note span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.live-feed .note.out { opacity: 0; transform: translateY(6px); }
+@keyframes notein { from { opacity: 0; transform: translateY(8px) scale(.96); } }
+.item.ping { animation: ping 1.4s ease-out; }
+.item.ping .stack > * { animation: popin .4s cubic-bezier(.3, 1.6, .5, 1); }
+@keyframes ping { from { background: color-mix(in srgb, var(--pc) 30%, var(--card)); } }
+@keyframes popin { from { transform: scale(.3); opacity: 0; } }
+.rail .ping .dot { animation: bump .5s cubic-bezier(.3, 1.6, .5, 1); }
+@keyframes bump { 40% { transform: scale(1.18); } }
+@media (prefers-reduced-motion: reduce) {
+  .live-feed .note, .item.ping, .item.ping .stack > *, .rail .ping .dot { animation: none; }
+}
